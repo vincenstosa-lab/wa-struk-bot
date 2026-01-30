@@ -1,10 +1,10 @@
 {
   "name": "wa-struk-bot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "WhatsApp OCR Struk Bot",
+  "main": "wa-bot.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node wa-bot.js"
   },
   "keywords": [],
   "author": "",
@@ -12,7 +12,6 @@
   "dependencies": {
     "@whiskeysockets/baileys": "^6.6.0",
     "axios": "^1.13.4",
-    "fs": "^0.0.1-security",
     "fs-extra": "^11.3.3",
     "google-spreadsheet": "^3.3.0",
     "qrcode-terminal": "^0.12.0",
