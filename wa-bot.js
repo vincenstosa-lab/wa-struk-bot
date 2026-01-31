@@ -1,7 +1,8 @@
-/* ================= IMPORT ================= */
-process.on('uncaughtException', err => console.error(err))
-process.on('unhandledRejection', err => console.error(err))
+/* ================= SAFE GUARD ================= */
+process.on('uncaughtException', err => console.error('❌ Uncaught:', err))
+process.on('unhandledRejection', err => console.error('❌ Rejection:', err))
 
+/* ================= IMPORT ================= */
 const express = require('express')
 const {
   default: makeWASocket,
@@ -19,7 +20,14 @@ const { GoogleSpreadsheet } = require('google-spreadsheet')
 
 /* ================= HTTP SERVER (WAJIB UNTUK KOYEB) ================= */
 const app = express()
-app.get('/', (req, res) => res.send('✅ WA Struk Bot is running'))
+
+app.get('/', (req, res) => {
+  res.status(200).send('✅ WA Struk Bot is running')
+})
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() })
+})
 
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {
@@ -54,12 +62,11 @@ function extractTotalFinal(text='') {
   for (let i = lines.length-1; i >= 0; i--) {
     if (/total(?!.*kembali|.*diskon|.*pajak)/i.test(lines[i])) {
       const nums = lines[i].match(/\d{1,3}([.,]\d{3})+/g)
-      if (nums) return parseInt(nums[nums.length-1].replace(/[.,]/g,''))
+      if (nums) return parseInt(nums.at(-1).replace(/[.,]/g,''))
     }
   }
   const nums = text.match(/\d{1,3}([.,]\d{3})+/g)
-  if (!nums) return null
-  return Math.max(...nums.map(n=>parseInt(n.replace(/[.,]/g,''))))
+  return nums ? Math.max(...nums.map(n=>parseInt(n.replace(/[.,]/g,'')))) : null
 }
 
 // 📅 DATE TIME
@@ -73,10 +80,7 @@ function extractDateTime(text='') {
     const m = text.match(p)
     if (m) {
       if (isNaN(m[2])) return new Date(m[3], MONTHS[m[2]], m[1])
-      return new Date(
-        m[3].length===2?'20'+m[3]:m[3],
-        m[2]-1, m[1], m[4]||0, m[5]||0
-      )
+      return new Date(m[3].length===2?'20'+m[3]:m[3], m[2]-1, m[1], m[4]||0, m[5]||0)
     }
   }
   return new Date()
@@ -88,8 +92,7 @@ function extractMerchantOCR(text='') {
   const candidates = text.split('\n')
     .map(l=>l.trim())
     .filter(l=>l.length>5 && !/\d/.test(l) && !blacklist.test(l))
-  if (!candidates.length) return 'Merchant'
-  return candidates.sort((a,b)=>b.length-a.length)[0]
+  return candidates.length ? candidates.sort((a,b)=>b.length-a.length)[0] : 'Merchant'
 }
 
 // 📂 KATEGORI
@@ -104,10 +107,7 @@ function detectCategory(text='') {
 
 // 💾 GOOGLE SHEET
 async function saveToSheet(data) {
-  if (!CREDS) {
-    console.log('⚠️ GOOGLE_CREDS_JSON belum di-set')
-    return
-  }
+  if (!CREDS) return console.log('⚠️ GOOGLE_CREDS_JSON belum di-set')
   const doc = new GoogleSpreadsheet(SHEET_ID)
   await doc.useServiceAccountAuth(CREDS)
   await doc.loadInfo()
@@ -129,10 +129,11 @@ async function startBot() {
   sock.ev.on('connection.update', ({connection,qr,lastDisconnect}) => {
     if (qr) qrcode.generate(qr,{small:true})
     if (connection==='open') console.log('✅ BOT TERHUBUNG')
-    if (
-      connection==='close' &&
-      lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
-    ) startBot()
+    if (connection==='close' &&
+        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
+      console.log('🔁 Reconnecting...')
+      startBot()
+    }
   })
 
   sock.ev.on('messages.upsert', async ({messages,type}) => {
@@ -163,49 +164,15 @@ async function startBot() {
 
       if (cmd.startsWith('edit ') && /\d/.test(cmd)) {
         const n = cmd.match(/\d+/g)?.join('')
-        if (n) {
-          pendingConfirm[from].TOTAL=parseInt(n)
-          return sock.sendMessage(from,{
-            text:`✏️ Total diubah → Rp ${parseInt(n).toLocaleString('id-ID')}\nBalas Y / N`
-          })
-        }
+        pendingConfirm[from].TOTAL=parseInt(n)
+        return sock.sendMessage(from,{text:`✏️ Total diubah → Rp ${parseInt(n).toLocaleString('id-ID')}\nBalas Y / N`})
       }
 
       if (cmd.startsWith('edit merchant')||cmd.startsWith('edit toko')) {
         const m = cmd.replace(/edit merchant|edit toko/i,'').trim()
-        if (m.length>2) {
-          pendingConfirm[from].MERCHANT=m.replace(/\b\w/g,l=>l.toUpperCase())
-          return sock.sendMessage(from,{
-            text:`✏️ Merchant diubah → ${pendingConfirm[from].MERCHANT}\nBalas Y / N`
-          })
-        }
+        pendingConfirm[from].MERCHANT=m
+        return sock.sendMessage(from,{text:`✏️ Merchant diubah → ${m}\nBalas Y / N`})
       }
-    }
-
-    /* ===== MANUAL TEXT ===== */
-    if (text && !pendingConfirm[from]) {
-      const total = extractTotalFinal(text)
-      if (!total) return
-      const dt = extractDateTime(text)
-
-      pendingConfirm[from]={
-        TANGGAL: dt.toLocaleDateString('id-ID'),
-        JAM: dt.toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}),
-        MERCHANT: text.replace(/\d+/g,'').trim(),
-        TOTAL: total,
-        KATEGORI: detectCategory(text)
-      }
-
-      const d = pendingConfirm[from]
-      return sock.sendMessage(from,{text:
-`📌 *PENGELUARAN*
-📅 ${d.TANGGAL} ${d.JAM}
-🏪 ${d.MERCHANT}
-💰 Rp ${d.TOTAL.toLocaleString('id-ID')}
-📂 ${d.KATEGORI}
-
-Balas: Y / N / edit 5500 / edit merchant nama`
-      })
     }
 
     /* ===== OCR IMAGE ===== */
@@ -214,13 +181,9 @@ Balas: Y / N / edit 5500 / edit merchant nama`
       const file = path.join(IMAGE_DIR,Date.now()+'.jpg')
       fs.writeFileSync(file,buffer)
 
-      const { data } = await Tesseract.recognize(file,'ind',{
-        preserve_interword_spaces:1
-      })
-
+      const { data } = await Tesseract.recognize(file,'ind')
       const total = extractTotalFinal(data.text)
-      if (!total)
-        return sock.sendMessage(from,{text:'❌ Total tidak terbaca'})
+      if (!total) return sock.sendMessage(from,{text:'❌ Total tidak terbaca'})
 
       const dt = extractDateTime(data.text)
       pendingConfirm[from]={
