@@ -167,20 +167,59 @@ async function startBot() {
     /* ===== CONFIRM MODE ===== */
     if (pendingConfirm[from]) {
       const d = pendingConfirm[from]
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
 
-      if (/^y$/i.test(text)) {
-        await saveToSheet(d)
-        delete pendingConfirm[from]
-        return sock.sendMessage(from, { text: '✅ TERSIMPAN' })
+      for (const line of lines) {
+
+        // ===== KONFIRMASI =====
+        if (/^y$/i.test(line)) {
+          await saveToSheet(d)
+          delete pendingConfirm[from]
+          return sock.sendMessage(from, { text: '✅ TERSIMPAN' })
+        }
+
+        if (/^n$/i.test(line)) {
+          delete pendingConfirm[from]
+          return sock.sendMessage(from, { text: '❌ DIBATALKAN' })
+        }
+
+        // ===== EDIT ANGKA LANGSUNG (Edit 5500) =====
+        if (/^edit\s*\d+/i.test(line)) {
+          const num = Number(line.replace(/\D/g, ''))
+          if (num) d.TOTAL = num
+          continue
+        }
+
+        // ===== NOMINAL =====
+        if (/^(nominal|total)\s*\d+/i.test(line)) {
+          const num = Number(line.replace(/\D/g, ''))
+          if (num) d.TOTAL = num
+          continue
+        }
+
+        // ===== MERCHANT =====
+        if (/^(edit\s*)?(merchant|toko|store)\s+/i.test(line)) {
+          d.MERCHANT = line.replace(/^(edit\s*)?(merchant|toko|store)/i, '').trim()
+          continue
+        }
+
+        // ===== KATEGORI =====
+        if (/^(edit\s*)?(kategori|category)\s+/i.test(line)) {
+          d.KATEGORI = line.replace(/^(edit\s*)?(kategori|category)/i, '').trim()
+          continue
+        }
+
+        // ===== TANGGAL =====
+        if (/^(edit\s*)?(tanggal|date)\s+/i.test(line)) {
+          d.TANGGAL = line.replace(/^(edit\s*)?(tanggal|date)/i, '').trim()
+          continue
+        }
+
+        // ===== AUTO TANGGAL =====
+        if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/.test(line)) {
+          d.TANGGAL = line
+        }
       }
-      if (/^n$/i.test(text)) {
-        delete pendingConfirm[from]
-        return sock.sendMessage(from, { text: '❌ DIBATALKAN' })
-      }
-      if (/edit nominal/i.test(text)) d.TOTAL = Number(text.replace(/\D/g, ''))
-      if (/edit merchant/i.test(text)) d.MERCHANT = text.replace(/edit merchant/i, '').trim()
-      if (/edit kategori/i.test(text)) d.KATEGORI = text.replace(/edit kategori/i, '').trim()
-      if (/edit tanggal/i.test(text)) d.TANGGAL = text.replace(/edit tanggal/i, '').trim()
 
       return sock.sendMessage(from, { text: formatPreview(d) })
     }
