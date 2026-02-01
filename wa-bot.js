@@ -17,6 +17,7 @@ const Pino = require('pino')
 const fs = require('fs')
 const path = require('path')
 const Tesseract = require('tesseract.js')
+const sharp = require('sharp')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
 
 /* ================= CONFIG ================= */
@@ -30,11 +31,11 @@ const ALLOWED_SENDERS = [
   '6285727705945@s.whatsapp.net'   // Nomor pribadi kamu
 ]
 
-for (const d of [AUTH_DIR, IMAGE_DIR]) {
-  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
+for (const dir of [AUTH_DIR, IMAGE_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 }
 
-/* ================= HTTP ================= */
+/* ================= HTTP SERVER ================= */
 const app = express()
 let latestQR = null
 
@@ -82,6 +83,15 @@ function detectCategory(text = '') {
   return 'Lainnya'
 }
 
+/* ================= IMAGE PREPROCESSING ================= */
+async function preprocessImage(filePath) {
+  const processedImage = await sharp(filePath)
+    .greyscale()               // Mengubah gambar menjadi grayscale
+    .normalize()               // Menormalkan kontras
+    .toBuffer()               // Mengubah menjadi buffer
+  return processedImage
+}
+
 function formatPreview(d) {
   return `
 🧾 *HASIL*
@@ -124,7 +134,7 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('connection.update', ({ connection, qr, lastDisconnect }) => {
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
     if (qr) latestQR = qr
     if (connection === 'close') {
       const r = lastDisconnect?.error?.output?.statusCode
@@ -197,7 +207,8 @@ async function startBot() {
       const file = path.join(IMAGE_DIR, Date.now() + '.jpg')
       fs.writeFileSync(file, buffer)
 
-      const { data } = await Tesseract.recognize(file, 'eng+ind')
+      const processedImage = await preprocessImage(file)
+      const { data } = await Tesseract.recognize(processedImage, 'eng+ind')
       const total = extractTotal(data.text)
       if (!total) throw new Error()
 
