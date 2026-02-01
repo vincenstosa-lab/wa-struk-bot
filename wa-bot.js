@@ -17,6 +17,7 @@ const Pino = require('pino')
 const fs = require('fs')
 const path = require('path')
 const Tesseract = require('tesseract.js')
+const sharp = require('sharp')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
 
 /* ================= CONFIG ================= */
@@ -24,16 +25,11 @@ const AUTH_DIR = '/data/auth'
 const IMAGE_DIR = '/data/images'
 const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 
-/* 🔒 HANYA NOMOR INI YANG DILAYANI */
-const ALLOWED_SENDERS = process.env.ALLOWED_SENDERS
-  ? process.env.ALLOWED_SENDERS.split(',').map(s => s.trim())
-  : []
-
-for (const d of [AUTH_DIR, IMAGE_DIR]) {
-  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
+for (const dir of [AUTH_DIR, IMAGE_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 }
 
-/* ================= HTTP ================= */
+/* ================= HTTP SERVER ================= */
 const app = express()
 let latestQR = null
 
@@ -81,6 +77,15 @@ function detectCategory(text = '') {
   if (/apotek|klinik/.test(t)) return 'Kesehatan'
   if (/telkomsel|indosat|xl|tri/.test(t)) return 'Pulsa / Internet'
   return 'Lainnya'
+}
+
+/* ================= IMAGE PREPROCESSING ================= */
+async function preprocessImage(filePath) {
+  const processedImage = await sharp(filePath)
+    .greyscale()               // Mengubah gambar menjadi grayscale
+    .normalize()               // Menormalkan kontras
+    .toBuffer()               // Mengubah menjadi buffer
+  return processedImage
 }
 
 function formatPreview(d) {
@@ -143,13 +148,16 @@ async function startBot() {
     if (!msg?.message || msg.key.fromMe) return
 
     const from = msg.key.remoteJid
-    if (!ALLOWED_SENDERS.includes(from)) return  // Hanya menerima dari dua nomor yang diizinkan
-
     const text =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
       msg.message.imageMessage?.caption ||
       ''
+
+    // Cek apakah pesan berisi kata "pingpong"
+    if (!text.toLowerCase().includes('pingpong')) {
+      return // Jika tidak ada kata "pingpong", bot tidak akan merespons
+    }
 
     /* ===== CONFIRM MODE ===== */
     if (pendingConfirm[from]) {
@@ -198,7 +206,8 @@ async function startBot() {
       const file = path.join(IMAGE_DIR, Date.now() + '.jpg')
       fs.writeFileSync(file, buffer)
 
-      const { data } = await Tesseract.recognize(file, 'eng+ind')
+      const processedImage = await preprocessImage(file)
+      const { data } = await Tesseract.recognize(processedImage, 'eng+ind')
       const total = extractTotal(data.text)
       if (!total) throw new Error()
 
