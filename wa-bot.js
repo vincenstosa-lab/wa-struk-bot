@@ -94,9 +94,13 @@ async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
 
   const sock = makeWASocket({
-    auth: state,
-    logger: Pino({ level: 'silent' })
-  })
+  auth: state,
+  logger: Pino({ level: 'silent' }),
+  browser: ['WA Struk Bot', 'Chrome', '121.0'],
+  syncFullHistory: false,
+  markOnlineOnConnect: false
+})
+
 
   sock.ev.on('creds.update', saveCreds)
 
