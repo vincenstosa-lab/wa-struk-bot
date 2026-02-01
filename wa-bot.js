@@ -25,12 +25,6 @@ const AUTH_DIR = '/data/auth'
 const IMAGE_DIR = '/data/images'
 const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 
-/* 🔒 HANYA NOMOR INI YANG DILAYANI */
-const ALLOWED_SENDERS = [
-  '6287817750518@s.whatsapp.net',  // Nomor bot
-  '6285727705945@s.whatsapp.net'   // Nomor pribadi kamu
-]
-
 for (const dir of [AUTH_DIR, IMAGE_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 }
@@ -152,8 +146,6 @@ async function startBot() {
     if (!msg?.message || msg.key.fromMe) return
 
     const from = msg.key.remoteJid
-    if (!ALLOWED_SENDERS.includes(from)) return  // Hanya menerima dari dua nomor yang diizinkan
-
     const text =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
