@@ -164,7 +164,7 @@ async function startBot() {
       })
     }
 
-    /* ===== CONFIRM MODE ===== */
+    /* ===== CONFIRM MODE (SUPER FLEX & SMART PARSING) ===== */
     if (pendingConfirm[from]) {
       const d = pendingConfirm[from]
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
@@ -183,39 +183,48 @@ async function startBot() {
           return sock.sendMessage(from, { text: '❌ DIBATALKAN' })
         }
 
-        // ===== EDIT ANGKA LANGSUNG (Edit 5500) =====
-        if (/^edit\s*\d+/i.test(line)) {
+        // ============================== 
+        // 🔥 NOMINAL (PRIORITAS PALING ATAS)
+        // ==============================
+
+        // 1️⃣ ANGKA DOANG → OVERRIDE TOTAL
+        if (/^\d{3,}$/.test(line)) {
+          d.TOTAL = Number(line)
+          continue
+        }
+
+        // 2️⃣ edit nominal 5500 / nominal 5500 / total 5500
+        if (/^(edit\s*)?(nominal|total)\s*\d+/i.test(line)) {
           const num = Number(line.replace(/\D/g, ''))
           if (num) d.TOTAL = num
           continue
         }
 
-        // ===== NOMINAL =====
-        if (/^(nominal|total)\s*\d+/i.test(line)) {
-          const num = Number(line.replace(/\D/g, ''))
-          if (num) d.TOTAL = num
-          continue
-        }
-
-        // ===== MERCHANT =====
+        // ==============================
+        // 🏪 MERCHANT
+        // ==============================
         if (/^(edit\s*)?(merchant|toko|store)\s+/i.test(line)) {
           d.MERCHANT = line.replace(/^(edit\s*)?(merchant|toko|store)/i, '').trim()
           continue
         }
 
-        // ===== KATEGORI =====
+        // ==============================
+        // 📦 KATEGORI
+        // ==============================
         if (/^(edit\s*)?(kategori|category)\s+/i.test(line)) {
           d.KATEGORI = line.replace(/^(edit\s*)?(kategori|category)/i, '').trim()
           continue
         }
 
-        // ===== TANGGAL =====
+        // ==============================
+        // 📅 TANGGAL
+        // ==============================
         if (/^(edit\s*)?(tanggal|date)\s+/i.test(line)) {
           d.TANGGAL = line.replace(/^(edit\s*)?(tanggal|date)/i, '').trim()
           continue
         }
 
-        // ===== AUTO TANGGAL =====
+        // AUTO TANGGAL
         if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/.test(line)) {
           d.TANGGAL = line
         }
