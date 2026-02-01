@@ -25,12 +25,10 @@ const IMAGE_DIR = '/data/images'
 const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 
 /* 🔒 HANYA NOMOR INI YANG DILAYANI */
-const ALLOWED_SENDERS = [
-  '6285727705945@s.whatsapp.net'   // Nomor pribadi kamu yang boleh mengirim gambar
-]
+const ALLOWED_SENDERS = process.env.ALLOWED_SENDERS.split(',') // Membaca dari environment variable
 
-for (const dir of [AUTH_DIR, IMAGE_DIR]) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+for (const d of [AUTH_DIR, IMAGE_DIR]) {
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
 }
 
 /* ================= HTTP ================= */
@@ -39,7 +37,9 @@ let latestQR = null
 
 app.get('/', (_, res) => res.send('✅ WA Struk Bot running'))
 app.get('/qr', async (_, res) => {
-  if (!latestQR) return res.send('❌ QR belum tersedia')
+  if (!latestQR) {
+    return res.send('❌ QR belum tersedia')
+  }
   res.send(`<img src="${await QRCode.toDataURL(latestQR)}" />`)
 })
 app.listen(process.env.PORT || 3000)
@@ -79,15 +79,6 @@ function detectCategory(text = '') {
   if (/apotek|klinik/.test(t)) return 'Kesehatan'
   if (/telkomsel|indosat|xl|tri/.test(t)) return 'Pulsa / Internet'
   return 'Lainnya'
-}
-
-/* ================= IMAGE PREPROCESSING ================= */
-async function preprocessImage(filePath) {
-  const processedImage = await sharp(filePath)
-    .greyscale()               // Mengubah gambar menjadi grayscale
-    .normalize()               // Menormalkan kontras
-    .toBuffer()               // Mengubah menjadi buffer
-  return processedImage
 }
 
 function formatPreview(d) {
@@ -150,7 +141,7 @@ async function startBot() {
     if (!msg?.message || msg.key.fromMe) return
 
     const from = msg.key.remoteJid
-    if (!ALLOWED_SENDERS.includes(from)) return  // Hanya menerima dari nomor pribadi kamu
+    if (!ALLOWED_SENDERS.includes(from)) return  // Hanya menerima dari dua nomor yang diizinkan
 
     const text =
       msg.message.conversation ||
@@ -205,8 +196,7 @@ async function startBot() {
       const file = path.join(IMAGE_DIR, Date.now() + '.jpg')
       fs.writeFileSync(file, buffer)
 
-      const processedImage = await preprocessImage(file)
-      const { data } = await Tesseract.recognize(processedImage, 'eng+ind')
+      const { data } = await Tesseract.recognize(file, 'eng+ind')
       const total = extractTotal(data.text)
       if (!total) throw new Error()
 

@@ -22,3 +22,6 @@ primary_region = 'sin'
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 2048
+
+[env]
+ALLOWED_SENDERS = "6287817750518@s.whatsapp.net,6285727705945@s.whatsapp.net"
