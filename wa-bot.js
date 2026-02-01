@@ -35,9 +35,7 @@ let latestQR = null
 
 app.get('/', (_, res) => res.send('✅ WA Struk Bot running'))
 app.get('/qr', async (_, res) => {
-  if (!latestQR) {
-    return res.send('❌ QR belum tersedia')
-  }
+  if (!latestQR) return res.send('❌ QR belum tersedia')
   res.send(`<img src="${await QRCode.toDataURL(latestQR)}" />`)
 })
 app.listen(process.env.PORT || 3000)
@@ -153,11 +151,6 @@ async function startBot() {
       msg.message.extendedTextMessage?.text ||
       msg.message.imageMessage?.caption ||
       ''
-
-    // Cek apakah pesan berisi kata "pingpong"
-    if (!text.toLowerCase().includes('pingpong')) {
-      return // Jika tidak ada kata "pingpong", bot tidak akan merespons
-    }
 
     /* ===== CONFIRM MODE ===== */
     if (pendingConfirm[from]) {
