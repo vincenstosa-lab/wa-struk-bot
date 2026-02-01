@@ -8,6 +8,7 @@ const QRCode = require('qrcode')
 const {
   default: makeWASocket,
   useMultiFileAuthState,
+  fetchLatestBaileysVersion,
   DisconnectReason,
   downloadMediaMessage
 } = require('@whiskeysockets/baileys')
@@ -26,7 +27,7 @@ for (const dir of [AUTH_DIR, IMAGE_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 }
 
-/* ================= HTTP ================= */
+/* ================= HTTP SERVER ================= */
 const app = express()
 let latestQR = null
 
@@ -43,7 +44,7 @@ app.get('/qr', async (_, res) => {
       <body style="display:flex;flex-direction:column;align-items:center;font-family:sans-serif">
         <h2>📲 Scan QR WhatsApp</h2>
         <img src="${img}" />
-        <p>WA → Linked Devices → Link a device</p>
+        <p>WhatsApp HP → Linked Devices → Link a device</p>
       </body>
     </html>
   `)
@@ -53,7 +54,7 @@ app.listen(process.env.PORT || 3000, () =>
   console.log('🌐 Web server running')
 )
 
-/* ================= CONFIG ================= */
+/* ================= GOOGLE SHEET ================= */
 const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 
 let CREDS = null
@@ -77,7 +78,7 @@ function cleanup(file) {
   try { file && fs.unlinkSync(file) } catch {}
 }
 
-/* ================= GOOGLE SHEET ================= */
+/* ================= GOOGLE SHEET SAVE ================= */
 async function saveToSheet(data) {
   if (!CREDS) return
   const doc = new GoogleSpreadsheet(SHEET_ID)
@@ -93,14 +94,18 @@ async function startBot() {
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
 
-  const sock = makeWASocket({
-  auth: state,
-  logger: Pino({ level: 'silent' }),
-  browser: ['WA Struk Bot', 'Chrome', '121.0'],
-  syncFullHistory: false,
-  markOnlineOnConnect: false
-})
+  const { version, isLatest } = await fetchLatestBaileysVersion()
+  console.log('📦 WA Web version:', version, 'latest:', isLatest)
 
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    logger: Pino({ level: 'silent' }),
+    browser: ['WA Struk Bot', 'Chrome', '121.0'],
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+    printQRInTerminal: false
+  })
 
   sock.ev.on('creds.update', saveCreds)
 
