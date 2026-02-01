@@ -87,6 +87,7 @@ async function preprocessImage(filePath) {
   return processedImage
 }
 
+/* ================= FORMAT PREVIEW ================= */
 function formatPreview(d) {
   return `
 🧾 *HASIL*
@@ -98,13 +99,14 @@ function formatPreview(d) {
 
 Balas:
 Y / N
-edit nominal 
-edit merchant 
-edit kategori 
+edit nominal
+edit merchant
+edit kategori
 edit tanggal
 `
 }
 
+/* ================= SAVE TO SHEET ================= */
 async function saveToSheet(data) {
   if (!CREDS) return
   const doc = new GoogleSpreadsheet(SHEET_ID)
