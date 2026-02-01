@@ -17,7 +17,6 @@ const Pino = require('pino')
 const fs = require('fs')
 const path = require('path')
 const Tesseract = require('tesseract.js')
-const sharp = require('sharp')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
 
 /* ================= CONFIG ================= */
@@ -25,11 +24,16 @@ const AUTH_DIR = '/data/auth'
 const IMAGE_DIR = '/data/images'
 const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 
+/* 🔒 HANYA NOMOR INI YANG DILAYANI */
+const ALLOWED_SENDERS = [
+  '6285727705945@s.whatsapp.net'   // Nomor pribadi kamu yang boleh mengirim gambar
+]
+
 for (const dir of [AUTH_DIR, IMAGE_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 }
 
-/* ================= HTTP SERVER ================= */
+/* ================= HTTP ================= */
 const app = express()
 let latestQR = null
 
@@ -146,6 +150,8 @@ async function startBot() {
     if (!msg?.message || msg.key.fromMe) return
 
     const from = msg.key.remoteJid
+    if (!ALLOWED_SENDERS.includes(from)) return  // Hanya menerima dari nomor pribadi kamu
+
     const text =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
