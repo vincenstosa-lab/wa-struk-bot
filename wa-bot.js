@@ -19,66 +19,86 @@ const path = require('path')
 const Tesseract = require('tesseract.js')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
 
-/* ================= PATH (FLY VOLUME) ================= */
+/* ================= CONFIG ================= */
 const AUTH_DIR = '/data/auth'
 const IMAGE_DIR = '/data/images'
+const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 
-for (const dir of [AUTH_DIR, IMAGE_DIR]) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+/* 🔒 HANYA NOMOR INI YANG DILAYANI */
+const ALLOWED_SENDERS = [
+  '6287817750518@s.whatsapp.net',  // Nomor bot
+  '6285727705945@s.whatsapp.net'   // Nomor pribadi kamu
+]
+
+for (const d of [AUTH_DIR, IMAGE_DIR]) {
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
 }
 
-/* ================= HTTP SERVER ================= */
+/* ================= HTTP ================= */
 const app = express()
 let latestQR = null
 
 app.get('/', (_, res) => res.send('✅ WA Struk Bot running'))
-
 app.get('/qr', async (_, res) => {
-  if (!latestQR) {
-    return res.send('❌ QR belum tersedia. Tunggu beberapa detik lalu refresh.')
-  }
-
-  const img = await QRCode.toDataURL(latestQR)
-  res.send(`
-    <html>
-      <body style="display:flex;flex-direction:column;align-items:center;font-family:sans-serif">
-        <h2>📲 Scan QR WhatsApp</h2>
-        <img src="${img}" />
-        <p>WhatsApp HP → Linked Devices → Link a device</p>
-      </body>
-    </html>
-  `)
+  if (!latestQR) return res.send('❌ QR belum tersedia')
+  res.send(`<img src="${await QRCode.toDataURL(latestQR)}" />`)
 })
+app.listen(process.env.PORT || 3000)
 
-app.listen(process.env.PORT || 3000, () =>
-  console.log('🌐 Web server running')
-)
-
-/* ================= GOOGLE SHEET ================= */
-const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
-
+/* ================= GOOGLE CREDS ================= */
 let CREDS = null
 if (process.env.GOOGLE_CREDS_JSON_BASE64) {
-  CREDS = JSON.parse(
-    Buffer.from(process.env.GOOGLE_CREDS_JSON_BASE64, 'base64').toString()
-  )
+  CREDS = JSON.parse(Buffer.from(process.env.GOOGLE_CREDS_JSON_BASE64, 'base64'))
 }
 
 /* ================= STATE ================= */
 const pendingConfirm = {}
 let starting = false
 
-/* ================= HELPERS ================= */
-function extractTotalFinal(text = '') {
-  const nums = text.replace(/\./g, '').match(/\d{4,}/g)
-  return nums ? Math.max(...nums.map(Number)) : null
+/* ================= OCR HELPERS ================= */
+function extractTotal(text = '') {
+  const lines = text.split('\n')
+  for (const l of lines) {
+    if (/total|jumlah|grand|bayar|amount/i.test(l)) {
+      const n = l.replace(/\./g, '').match(/\d{3,}/g)
+      if (n) return Number(n[n.length - 1])
+    }
+  }
+  const fallback = text.replace(/\./g, '').match(/\d{4,}/g)
+  return fallback ? Math.max(...fallback.map(Number)) : null
 }
 
-function cleanup(file) {
-  try { file && fs.unlinkSync(file) } catch {}
+function extractMerchant(text = '') {
+  return text.split('\n').map(l => l.trim()).filter(Boolean)[0]?.slice(0, 40) || 'Struk'
 }
 
-/* ================= GOOGLE SHEET SAVE ================= */
+function detectCategory(text = '') {
+  const t = text.toLowerCase()
+  if (/alfamart|indomaret/.test(t)) return 'Belanja'
+  if (/kopi|cafe|resto|warung|bakso|ayam|mie|nasi/.test(t)) return 'Makan & Minum'
+  if (/grab|gojek|spbu|pertamina/.test(t)) return 'Transport'
+  if (/apotek|klinik/.test(t)) return 'Kesehatan'
+  if (/telkomsel|indosat|xl|tri/.test(t)) return 'Pulsa / Internet'
+  return 'Lainnya'
+}
+
+function formatPreview(d) {
+  return `
+🧾 *HASIL*
+🏪 ${d.MERCHANT}
+📅 ${d.TANGGAL}
+⏰ ${d.JAM}
+💰 Rp ${d.TOTAL.toLocaleString('id-ID')}
+📦 ${d.KATEGORI}
+
+Balas:
+Y / N
+edit nominal 5500
+edit merchant Alfamart
+edit kategori Belanja
+`
+}
+
 async function saveToSheet(data) {
   if (!CREDS) return
   const doc = new GoogleSpreadsheet(SHEET_ID)
@@ -93,46 +113,28 @@ async function startBot() {
   starting = true
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
-
-  const { version, isLatest } = await fetchLatestBaileysVersion()
-  console.log('📦 WA Web version:', version, 'latest:', isLatest)
+  const { version } = await fetchLatestBaileysVersion()
 
   const sock = makeWASocket({
     version,
     auth: state,
     logger: Pino({ level: 'silent' }),
-    browser: ['WA Struk Bot', 'Chrome', '121.0'],
-    syncFullHistory: false,
-    markOnlineOnConnect: false,
-    printQRInTerminal: false
+    browser: ['WA Struk Bot', 'Chrome', '121']
   })
 
   sock.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
-    if (qr) {
-      latestQR = qr
-      console.log('📸 QR updated → buka /qr')
-    }
-
-    if (connection === 'open') {
-      console.log('✅ WhatsApp connected')
-      latestQR = null
-      starting = false
-    }
-
+  sock.ev.on('connection.update', ({ connection, qr, lastDisconnect }) => {
+    if (qr) latestQR = qr
     if (connection === 'close') {
-      const reason = lastDisconnect?.error?.output?.statusCode
-      console.log('❌ Disconnected:', reason)
-
-      if (reason === DisconnectReason.loggedOut) {
+      const r = lastDisconnect?.error?.output?.statusCode
+      if (r === DisconnectReason.loggedOut) {
         fs.rmSync(AUTH_DIR, { recursive: true, force: true })
-        latestQR = null
       }
-
       starting = false
       setTimeout(startBot, 5000)
     }
+    if (connection === 'open') starting = false
   })
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
@@ -140,55 +142,77 @@ async function startBot() {
     if (!msg?.message || msg.key.fromMe) return
 
     const from = msg.key.remoteJid
+    if (!ALLOWED_SENDERS.includes(from)) return  // Hanya menerima dari dua nomor yang diizinkan
+
     const text =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
       msg.message.imageMessage?.caption ||
       ''
 
-    /* === CONFIRM SAVE === */
+    /* ===== CONFIRM MODE ===== */
     if (pendingConfirm[from]) {
-      if (/^y$/i.test(text)) {
-        await saveToSheet(pendingConfirm[from])
-        delete pendingConfirm[from]
-        return sock.sendMessage(from, { text: '✅ Tersimpan di Google Sheet' })
-      }
+      const d = pendingConfirm[from]
 
+      if (/^y$/i.test(text)) {
+        await saveToSheet(d)
+        delete pendingConfirm[from]
+        return sock.sendMessage(from, { text: '✅ TERSIMPAN' })
+      }
       if (/^n$/i.test(text)) {
         delete pendingConfirm[from]
-        return sock.sendMessage(from, { text: '❌ Dibatalkan' })
+        return sock.sendMessage(from, { text: '❌ DIBATALKAN' })
       }
+      if (/edit nominal/i.test(text)) d.TOTAL = Number(text.replace(/\D/g, ''))
+      if (/edit merchant/i.test(text)) d.MERCHANT = text.replace(/edit merchant/i, '').trim()
+      if (/edit kategori/i.test(text)) d.KATEGORI = text.replace(/edit kategori/i, '').trim()
+
+      return sock.sendMessage(from, { text: formatPreview(d) })
     }
 
-    /* === IMAGE OCR === */
+    /* ===== MANUAL INPUT ===== */
+    if (/^manual/i.test(text)) {
+      const p = text.split(' ')
+      const total = Number(p[1])
+      const merchant = p[2] || 'Manual'
+      const kategori = p[3] || 'Lainnya'
+      const now = new Date()
+
+      pendingConfirm[from] = {
+        TANGGAL: now.toLocaleDateString('id-ID'),
+        JAM: now.toLocaleTimeString('id-ID'),
+        MERCHANT: merchant,
+        TOTAL: total,
+        KATEGORI: kategori
+      }
+
+      return sock.sendMessage(from, { text: formatPreview(pendingConfirm[from]) })
+    }
+
+    /* ===== IMAGE OCR ===== */
     if (!msg.message.imageMessage) return
 
-    let file
     try {
       const buffer = await downloadMediaMessage(msg, 'buffer')
-      file = path.join(IMAGE_DIR, Date.now() + '.jpg')
+      const file = path.join(IMAGE_DIR, Date.now() + '.jpg')
       fs.writeFileSync(file, buffer)
 
       const { data } = await Tesseract.recognize(file, 'eng+ind')
-      const total = extractTotalFinal(data.text)
+      const total = extractTotal(data.text)
       if (!total) throw new Error()
 
+      const now = new Date()
       pendingConfirm[from] = {
-        TANGGAL: new Date().toLocaleDateString('id-ID'),
-        JAM: new Date().toLocaleTimeString('id-ID'),
-        MERCHANT: 'Struk',
+        TANGGAL: now.toLocaleDateString('id-ID'),
+        JAM: now.toLocaleTimeString('id-ID'),
+        MERCHANT: extractMerchant(data.text),
         TOTAL: total,
-        KATEGORI: 'Lainnya'
+        KATEGORI: detectCategory(data.text)
       }
 
-      cleanup(file)
-      sock.sendMessage(from, {
-        text: `🧾 Total Rp ${total.toLocaleString('id-ID')}\nSimpan? Y / N`
-      })
-
+      sock.sendMessage(from, { text: formatPreview(pendingConfirm[from]) })
     } catch {
-      cleanup(file)
-      sock.sendMessage(from, { text: '❌ Gagal membaca struk' })
+      sock.sendMessage(from, { text: '❌ OCR gagal membaca struk' })
     }
   })
 }
