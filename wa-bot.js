@@ -98,9 +98,10 @@ function formatPreview(d) {
 
 Balas:
 Y / N
-edit nominal 5500
-edit merchant Alfamart
-edit kategori Belanja
+edit nominal 
+edit merchant 
+edit kategori 
+edit tanggal
 `
 }
 
@@ -177,6 +178,7 @@ async function startBot() {
       if (/edit nominal/i.test(text)) d.TOTAL = Number(text.replace(/\D/g, ''))
       if (/edit merchant/i.test(text)) d.MERCHANT = text.replace(/edit merchant/i, '').trim()
       if (/edit kategori/i.test(text)) d.KATEGORI = text.replace(/edit kategori/i, '').trim()
+      if (/edit tanggal/i.test(text)) d.TANGGAL = text.replace(/edit tanggal/i, '').trim()
 
       return sock.sendMessage(from, { text: formatPreview(d) })
     }
