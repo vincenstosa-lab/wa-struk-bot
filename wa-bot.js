@@ -48,6 +48,7 @@ if (process.env.GOOGLE_CREDS_JSON_BASE64) {
 
 /* ================= STATE ================= */
 const pendingConfirm = {}
+const armedUsers = {} // user yang sudah kirim "pingpong"
 let starting = false
 
 /* ================= OCR HELPERS ================= */
@@ -152,6 +153,14 @@ async function startBot() {
       msg.message.imageMessage?.caption ||
       ''
 
+    /* ===== AKTIVASI PINGPONG ===== */
+    if (/^pingpong$/i.test(text)) {
+      armedUsers[from] = true
+      return sock.sendMessage(from, {
+        text: '🏓 Siap! Kirim gambar struk atau ketik manual sekarang.'
+      })
+    }
+
     /* ===== CONFIRM MODE ===== */
     if (pendingConfirm[from]) {
       const d = pendingConfirm[from]
@@ -174,6 +183,8 @@ async function startBot() {
 
     /* ===== MANUAL INPUT ===== */
     if (/^manual/i.test(text)) {
+      if (!armedUsers[from]) return
+
       const p = text.split(' ')
       const total = Number(p[1])
       const merchant = p[2] || 'Manual'
@@ -188,6 +199,8 @@ async function startBot() {
         KATEGORI: kategori
       }
 
+      delete armedUsers[from] // Setelah dipakai, dikunci lagi
+
       return sock.sendMessage(from, { text: formatPreview(pendingConfirm[from]) })
     }
 
@@ -195,6 +208,8 @@ async function startBot() {
     if (!msg.message.imageMessage) return
 
     try {
+      if (!armedUsers[from]) return // Jika tidak pingpong, diam
+
       const buffer = await downloadMediaMessage(msg, 'buffer')
       const file = path.join(IMAGE_DIR, Date.now() + '.jpg')
       fs.writeFileSync(file, buffer)
@@ -213,9 +228,12 @@ async function startBot() {
         KATEGORI: detectCategory(data.text)
       }
 
-      sock.sendMessage(from, { text: formatPreview(pendingConfirm[from]) })
+      delete armedUsers[from] // Setelah diproses, dikunci lagi
+
+      return sock.sendMessage(from, { text: formatPreview(pendingConfirm[from]) })
     } catch {
-      sock.sendMessage(from, { text: '❌ OCR gagal membaca struk' })
+      delete armedUsers[from]
+      return sock.sendMessage(from, { text: '❌ OCR gagal membaca struk' })
     }
   })
 }
