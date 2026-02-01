@@ -22,27 +22,26 @@ const { GoogleSpreadsheet } = require('google-spreadsheet')
 const AUTH_DIR = '/data/auth'
 const IMAGE_DIR = '/data/images'
 
-;[AUTH_DIR, IMAGE_DIR].forEach(d => {
-  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
-})
+for (const dir of [AUTH_DIR, IMAGE_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+}
 
 /* ================= HTTP ================= */
 const app = express()
-
 let latestQR = null
 
 app.get('/', (_, res) => res.send('✅ WA Struk Bot running'))
 
 app.get('/qr', async (_, res) => {
   if (!latestQR) {
-    return res.send('❌ QR belum tersedia, tunggu bot connect')
+    return res.send('❌ QR belum tersedia. Tunggu beberapa detik lalu refresh.')
   }
 
   const img = await QRCode.toDataURL(latestQR)
   res.send(`
     <html>
-      <body style="display:flex;flex-direction:column;align-items:center">
-        <h2>Scan QR WhatsApp</h2>
+      <body style="display:flex;flex-direction:column;align-items:center;font-family:sans-serif">
+        <h2>📲 Scan QR WhatsApp</h2>
         <img src="${img}" />
         <p>WA → Linked Devices → Link a device</p>
       </body>
@@ -50,7 +49,9 @@ app.get('/qr', async (_, res) => {
   `)
 })
 
-app.listen(process.env.PORT || 3000)
+app.listen(process.env.PORT || 3000, () =>
+  console.log('🌐 Web server running')
+)
 
 /* ================= CONFIG ================= */
 const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
@@ -64,11 +65,11 @@ if (process.env.GOOGLE_CREDS_JSON_BASE64) {
 
 /* ================= STATE ================= */
 const pendingConfirm = {}
-let isStarting = false
+let starting = false
 
 /* ================= HELPERS ================= */
 function extractTotalFinal(text = '') {
-  const nums = text.match(/\d{4,}/g)
+  const nums = text.replace(/\./g, '').match(/\d{4,}/g)
   return nums ? Math.max(...nums.map(Number)) : null
 }
 
@@ -87,105 +88,100 @@ async function saveToSheet(data) {
 
 /* ================= BOT ================= */
 async function startBot() {
-  if (isStarting) return
-  isStarting = true
+  if (starting) return
+  starting = true
 
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
 
-    const sock = makeWASocket({
-      auth: state,
-      logger: Pino({ level: 'silent' })
-    })
+  const sock = makeWASocket({
+    auth: state,
+    logger: Pino({ level: 'silent' })
+  })
 
-    sock.ev.on('creds.update', saveCreds)
+  sock.ev.on('creds.update', saveCreds)
 
-    sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      latestQR = qr
+      console.log('📸 QR updated → buka /qr')
+    }
 
-      if (qr) {
-        latestQR = qr
-        console.log('📸 QR updated (akses /qr)')
-      }
+    if (connection === 'open') {
+      console.log('✅ WhatsApp connected')
+      latestQR = null
+      starting = false
+    }
 
-      if (connection === 'open') {
-        console.log('✅ WhatsApp connected')
+    if (connection === 'close') {
+      const reason = lastDisconnect?.error?.output?.statusCode
+      console.log('❌ Disconnected:', reason)
+
+      if (reason === DisconnectReason.loggedOut) {
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true })
         latestQR = null
-        isStarting = false
       }
 
-      if (connection === 'close') {
-        const reason = lastDisconnect?.error?.output?.statusCode
-        console.log('❌ Disconnected:', reason)
+      starting = false
+      setTimeout(startBot, 5000)
+    }
+  })
 
-        if (reason === DisconnectReason.loggedOut) {
-          fs.rmSync(AUTH_DIR, { recursive: true, force: true })
-          latestQR = null
-        }
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    const msg = messages[0]
+    if (!msg?.message || msg.key.fromMe) return
 
-        isStarting = false
-        setTimeout(startBot, 7000)
-      }
-    })
+    const from = msg.key.remoteJid
+    const text =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text ||
+      msg.message.imageMessage?.caption ||
+      ''
 
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-      const msg = messages[0]
-      if (!msg?.message || msg.key.fromMe) return
-
-      const from = msg.key.remoteJid
-      const text =
-        msg.message.conversation ||
-        msg.message.extendedTextMessage?.text ||
-        msg.message.imageMessage?.caption ||
-        ''
-
-      if (pendingConfirm[from]) {
-        if (text === 'Y') {
-          await saveToSheet(pendingConfirm[from])
-          delete pendingConfirm[from]
-          return sock.sendMessage(from, { text: '✅ Tersimpan' })
-        }
-        if (text === 'N') {
-          delete pendingConfirm[from]
-          return sock.sendMessage(from, { text: '❌ Dibatalkan' })
-        }
+    /* === CONFIRM SAVE === */
+    if (pendingConfirm[from]) {
+      if (/^y$/i.test(text)) {
+        await saveToSheet(pendingConfirm[from])
+        delete pendingConfirm[from]
+        return sock.sendMessage(from, { text: '✅ Tersimpan di Google Sheet' })
       }
 
-      if (!msg.message.imageMessage) return
-
-      let file
-      try {
-        const buffer = await downloadMediaMessage(msg, 'buffer')
-        file = path.join(IMAGE_DIR, Date.now() + '.jpg')
-        fs.writeFileSync(file, buffer)
-
-        const { data } = await Tesseract.recognize(file, 'eng+ind')
-        const total = extractTotalFinal(data.text)
-        if (!total) throw new Error('Total not found')
-
-        pendingConfirm[from] = {
-          TANGGAL: new Date().toLocaleDateString('id-ID'),
-          JAM: new Date().toLocaleTimeString('id-ID'),
-          MERCHANT: 'Struk',
-          TOTAL: total,
-          KATEGORI: 'Lainnya'
-        }
-
-        cleanup(file)
-        sock.sendMessage(from, {
-          text: `🧾 Total Rp ${total.toLocaleString('id-ID')}\nSimpan? Y / N`
-        })
-
-      } catch {
-        cleanup(file)
-        sock.sendMessage(from, { text: '❌ OCR gagal' })
+      if (/^n$/i.test(text)) {
+        delete pendingConfirm[from]
+        return sock.sendMessage(from, { text: '❌ Dibatalkan' })
       }
-    })
+    }
 
-  } catch (e) {
-    console.log('❌ Startup error:', e.message)
-    isStarting = false
-    setTimeout(startBot, 7000)
-  }
+    /* === IMAGE OCR === */
+    if (!msg.message.imageMessage) return
+
+    let file
+    try {
+      const buffer = await downloadMediaMessage(msg, 'buffer')
+      file = path.join(IMAGE_DIR, Date.now() + '.jpg')
+      fs.writeFileSync(file, buffer)
+
+      const { data } = await Tesseract.recognize(file, 'eng+ind')
+      const total = extractTotalFinal(data.text)
+      if (!total) throw new Error()
+
+      pendingConfirm[from] = {
+        TANGGAL: new Date().toLocaleDateString('id-ID'),
+        JAM: new Date().toLocaleTimeString('id-ID'),
+        MERCHANT: 'Struk',
+        TOTAL: total,
+        KATEGORI: 'Lainnya'
+      }
+
+      cleanup(file)
+      sock.sendMessage(from, {
+        text: `🧾 Total Rp ${total.toLocaleString('id-ID')}\nSimpan? Y / N`
+      })
+
+    } catch {
+      cleanup(file)
+      sock.sendMessage(from, { text: '❌ Gagal membaca struk' })
+    }
+  })
 }
 
 startBot()
