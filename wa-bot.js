@@ -25,7 +25,9 @@ const IMAGE_DIR = '/data/images'
 const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 
 /* 🔒 HANYA NOMOR INI YANG DILAYANI */
-const ALLOWED_SENDERS = process.env.ALLOWED_SENDERS.split(',') // Membaca dari environment variable
+const ALLOWED_SENDERS = process.env.ALLOWED_SENDERS
+  ? process.env.ALLOWED_SENDERS.split(',').map(s => s.trim())
+  : []
 
 for (const d of [AUTH_DIR, IMAGE_DIR]) {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
