@@ -93,9 +93,9 @@ function formatPreview(d) {
 
 Balas:
 Y / N
-edit nominal 
-edit merchant 
-edit kategori 
+edit nominal 5500
+edit merchant Alfamart
+edit kategori Belanja
 `
 }
 
