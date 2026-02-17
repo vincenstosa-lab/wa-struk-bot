@@ -10,7 +10,6 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  DisconnectReason,
   downloadMediaMessage
 } = require('@whiskeysockets/baileys')
 
@@ -70,117 +69,101 @@ if (process.env.GOOGLE_CREDS_JSON_BASE64) {
 /* ================= STATE ================= */
 
 const pendingConfirm = {}
+const pendingManual = {}
 const armedUsers = {}
 let starting = false
 
-/* ================= AI HELPERS ================= */
-
-function hashReceipt(text) {
-  return crypto.createHash('md5')
-    .update(text.replace(/\s+/g,''))
-    .digest('hex')
-}
+/* ================= HELPERS ================= */
 
 function normalizeMerchant(name='') {
-  return name
-    .replace(/[^a-z0-9 ]/gi,'')
-    .toUpperCase()
-    .trim()
-    .slice(0,40)
+  return name.replace(/[^a-z0-9 ]/gi,'').toUpperCase().trim().slice(0,40)
 }
 
-function learnMerchant(merchant, kategori) {
-  const key = normalizeMerchant(merchant)
-  merchantMemory[key] = merchantMemory[key] || {}
-  merchantMemory[key].kategori = kategori
+function learnMerchant(m,k){
+  const key = normalizeMerchant(m)
+  merchantMemory[key]=merchantMemory[key]||{}
+  merchantMemory[key].kategori=k
   saveMemory()
 }
 
-function recallMerchantCategory(merchant) {
-  const key = normalizeMerchant(merchant)
-  return merchantMemory[key]?.kategori
+function recallMerchantCategory(m){
+  return merchantMemory[normalizeMerchant(m)]?.kategori
 }
 
-function anomalyCheck(merchant, total) {
-  const key = normalizeMerchant(merchant)
-  const hist = merchantMemory[key]?.lastTotals || []
-  if (!hist.length) return false
-  const avg = hist.reduce((a,b)=>a+b,0)/hist.length
-  return total > avg * 3
-}
-
-function rememberTotal(merchant, total) {
-  const key = normalizeMerchant(merchant)
-  merchantMemory[key] = merchantMemory[key] || {}
-  merchantMemory[key].lastTotals = merchantMemory[key].lastTotals || []
-  merchantMemory[key].lastTotals.push(total)
+function rememberTotal(m,t){
+  const key=normalizeMerchant(m)
+  merchantMemory[key]=merchantMemory[key]||{}
   merchantMemory[key].lastTotals =
-    merchantMemory[key].lastTotals.slice(-5)
+    (merchantMemory[key].lastTotals||[]).slice(-4).concat(t)
   saveMemory()
 }
 
-/* ================= OCR ================= */
+/* ================= OCR HELPERS ================= */
 
-function normalizeTime(t='') {
-  const m = t.match(/^([01]?\d|2[0-3])[:.]([0-5]\d)$/)
-  return m ? `${m[1].padStart(2,'0')}:${m[2]}` : null
+function normalizeTime(t=''){
+  const m=t.match(/^([01]?\d|2[0-3])[:.]([0-5]\d)$/)
+  return m?`${m[1].padStart(2,'0')}:${m[2]}`:null
 }
 
-function extractTime(text='') {
-  const m = text.match(/\b([01]?\d|2[0-3])[:.][0-5]\d\b/)
-  return m ? normalizeTime(m[0]) : null
+function normalizeDate(d=''){
+  const m = d.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/)
+  if(!m) return null
+  const dd=m[1].padStart(2,'0')
+  const mm=m[2].padStart(2,'0')
+  let yy=m[3]
+  if(yy.length===2) yy='20'+yy
+  return `${dd}/${mm}/${yy}`
 }
 
-function extractDate(text='') {
-  return text.match(/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/)?.[0]
+function extractTime(text=''){
+  const m=text.match(/\b([01]?\d|2[0-3])[:.][0-5]\d\b/)
+  return m?normalizeTime(m[0]):null
 }
 
-function extractMerchant(text='') {
-  return text.split('\n').find(Boolean)?.slice(0,40) || 'Struk'
+function extractDate(text=''){
+  const m=text.match(/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/)
+  return m?normalizeDate(m[0]):null
 }
 
-function detectPayment(text='') {
-  const t = text.toLowerCase()
-  if (/qris/.test(t)) return 'QRIS'
-  if (/cash|tunai/.test(t)) return 'Cash'
-  if (/debit|kredit/.test(t)) return 'Card'
+function extractMerchant(text=''){
+  return text.split('\n').find(Boolean)?.slice(0,40)||'Struk'
+}
+
+function detectPayment(text=''){
+  if(/qris/i.test(text)) return 'QRIS'
+  if(/cash|tunai/i.test(text)) return 'Cash'
+  if(/debit|kredit/i.test(text)) return 'Card'
   return 'Unknown'
 }
 
-function detectCategory(text='') {
-  const t = text.toLowerCase()
-  if (/alfamart|indomaret/.test(t)) return 'Belanja'
-  if (/resto|kopi|warung/.test(t)) return 'Makan & Minum'
-  if (/grab|gojek/.test(t)) return 'Transport'
+function detectCategory(text=''){
+  if(/alfamart|indomaret/i.test(text)) return 'Belanja'
+  if(/resto|kopi|warung/i.test(text)) return 'Makan & Minum'
+  if(/grab|gojek/i.test(text)) return 'Transport'
   return 'Lainnya'
 }
 
-function extractBestTotal(words=[]) {
+function extractBestTotal(words=[]){
   let best=null
-  for (const w of words) {
-    if (!/\d{3,}/.test(w.text)) continue
-    const v = Number(w.text.replace(/\D/g,''))
-    if (!v) continue
-    if (!best || w.confidence > best.conf)
-      best = { value:v, conf:w.confidence }
+  for(const w of words){
+    if(!/\d{3,}/.test(w.text)) continue
+    const v=Number(w.text.replace(/\D/g,''))
+    if(!v) continue
+    if(!best||w.confidence>best.conf)
+      best={value:v,conf:w.confidence}
   }
   return best
 }
 
-/* ================= IMAGE PREPROCESS ================= */
+/* ================= IMAGE ================= */
 
-async function preprocessImage(fp) {
-  return sharp(fp)
-    .rotate()
-    .greyscale()
-    .normalize()
-    .sharpen()
-    .toBuffer()
+async function preprocessImage(fp){
+  return sharp(fp).rotate().greyscale().normalize().sharpen().toBuffer()
 }
 
 /* ================= PREVIEW ================= */
 
-function formatPreview(d) {
+function formatPreview(d){
 return `
 🧾 *AI EXPENSE ANALYSIS*
 🏪 ${d.MERCHANT}
@@ -191,156 +174,210 @@ return `
 💳 ${d.METODE}
 🔍 Conf ${d.OCR_CONF}
 
-Balas Y / N
+Balas:
+Y / N
 edit nominal …
 edit merchant …
 edit kategori …
+edit metode …
 edit jam …
+edit tanggal …
 `
 }
 
 /* ================= SHEET ================= */
 
-async function saveToSheet(data) {
-  if (!CREDS) return
-  const doc = new GoogleSpreadsheet(SHEET_ID)
-  await doc.useServiceAccountAuth(CREDS)
-  await doc.loadInfo()
-  await doc.sheetsByIndex[0].addRow(data)
+async function saveToSheet(data){
+ if(!CREDS) return
+ const doc=new GoogleSpreadsheet(SHEET_ID)
+ await doc.useServiceAccountAuth(CREDS)
+ await doc.loadInfo()
+ await doc.sheetsByIndex[0].addRow(data)
 }
 
 /* ================= BOT ================= */
 
-async function startBot() {
-if (starting) return
-starting = true
+async function startBot(){
+if(starting) return
+starting=true
 
-const { state, saveCreds } =
-  await useMultiFileAuthState(AUTH_DIR)
+const {state,saveCreds}=await useMultiFileAuthState(AUTH_DIR)
+const {version}=await fetchLatestBaileysVersion()
 
-const { version } =
-  await fetchLatestBaileysVersion()
-
-const sock = makeWASocket({
-  version,
-  auth: state,
-  logger: Pino({ level:'silent' }),
-  browser:['AIExpense','Chrome','121']
+const sock=makeWASocket({
+ version,
+ auth:state,
+ logger:Pino({level:'silent'}),
+ browser:['AIExpense','Chrome','121']
 })
 
-sock.ev.on('creds.update', saveCreds)
+sock.ev.on('creds.update',saveCreds)
 
-sock.ev.on('connection.update', ({connection,qr})=>{
-  if(qr) latestQR=qr
-  if(connection==='close'){
-    starting=false
-    setTimeout(startBot,5000)
-  }
+sock.ev.on('connection.update',({connection,qr})=>{
+ if(qr) latestQR=qr
+ if(connection==='close'){
+  starting=false
+  setTimeout(startBot,5000)
+ }
 })
 
 sock.ev.on('messages.upsert', async ({messages})=>{
-const msg = messages[0]
-if (!msg?.message || msg.key.fromMe) return
+const msg=messages[0]
+if(!msg?.message||msg.key.fromMe) return
 
-const from = msg.key.remoteJid
-const text =
+const from=msg.key.remoteJid
+const text=
  msg.message.conversation ||
  msg.message.extendedTextMessage?.text ||
  msg.message.imageMessage?.caption || ''
 
 /* ARM */
-if (/^pingpong$/i.test(text)) {
+if(/^pingpong$/i.test(text)){
  armedUsers[from]=true
- return sock.sendMessage(from,{text:'📥 Kirim struk'})
+ return sock.sendMessage(from,{text:'📥 Kirim struk atau ketik manual'})
 }
 
-/* CONFIRM */
-if (pendingConfirm[from]) {
- const d = pendingConfirm[from]
+/* ===== MANUAL MODE ===== */
 
- if (/^y$/i.test(text)) {
-   learnMerchant(d.MERCHANT, d.KATEGORI)
-   rememberTotal(d.MERCHANT, d.TOTAL)
-   await saveToSheet(d)
-   delete pendingConfirm[from]
-   return sock.sendMessage(from,{text:'✅ Disimpan'})
+if(pendingManual[from]){
+ const lines=text.split('\n')
+ const d={
+  MERCHANT:'Manual',
+  TOTAL:0,
+  TANGGAL:new Date().toLocaleDateString('id-ID'),
+  JAM:new Date().toLocaleTimeString('id-ID'),
+  KATEGORI:'Manual',
+  METODE:'Manual',
+  OCR_CONF:0
  }
 
- if (/^n$/i.test(text)) {
-   delete pendingConfirm[from]
-   return sock.sendMessage(from,{text:'❌ Batal'})
+ for(const l of lines){
+  if(/total/i.test(l)) d.TOTAL=Number(l.replace(/\D/g,''))
+  if(/merchant/i.test(l)) d.MERCHANT=l.split(' ').slice(1).join(' ')
+  if(/kategori/i.test(l)) d.KATEGORI=l.split(' ').slice(1).join(' ')
+  if(/metode/i.test(l)) d.METODE=l.split(' ').slice(1).join(' ')
+  if(/jam/i.test(l)){
+    const t=normalizeTime(l.split(' ').pop())
+    if(t) d.JAM=t
+  }
+  if(/tanggal/i.test(l)){
+    const dt=normalizeDate(l)
+    if(dt) d.TANGGAL=dt
+  }
  }
 
- if (/nominal/i.test(text))
-   d.TOTAL = Number(text.replace(/\D/g,''))
+ if(!d.TOTAL)
+  return sock.sendMessage(from,{text:'❌ Total belum ada'})
 
- if (/kategori/i.test(text)) {
-   d.KATEGORI = text.split(' ').slice(1).join(' ')
-   learnMerchant(d.MERCHANT, d.KATEGORI)
+ pendingConfirm[from]=d
+ delete pendingManual[from]
+ return sock.sendMessage(from,{text:formatPreview(d)})
+}
+
+/* ===== CONFIRM ===== */
+
+if(pendingConfirm[from]){
+ const d=pendingConfirm[from]
+
+ if(/^y$/i.test(text)){
+  learnMerchant(d.MERCHANT,d.KATEGORI)
+  rememberTotal(d.MERCHANT,d.TOTAL)
+  await saveToSheet(d)
+  delete pendingConfirm[from]
+  return sock.sendMessage(from,{text:'✅ Disimpan'})
  }
 
- if (/jam/i.test(text)) {
-   const t = normalizeTime(text.split(' ').pop())
-   if (t) d.JAM = t
+ if(/^n$/i.test(text)){
+  delete pendingConfirm[from]
+  return sock.sendMessage(from,{text:'❌ Batal'})
+ }
+
+ if(/nominal/i.test(text))
+  d.TOTAL=Number(text.replace(/\D/g,''))
+
+ if(/merchant/i.test(text))
+  d.MERCHANT=text.split(' ').slice(1).join(' ')
+
+ if(/kategori/i.test(text))
+  d.KATEGORI=text.split(' ').slice(1).join(' ')
+
+ if(/metode/i.test(text))
+  d.METODE=text.split(' ').slice(1).join(' ')
+
+ if(/jam/i.test(text)){
+  const t=normalizeTime(text.split(' ').pop())
+  if(t) d.JAM=t
+ }
+
+ if(/tanggal/i.test(text)){
+  const dt=normalizeDate(text)
+  if(dt) d.TANGGAL=dt
  }
 
  return sock.sendMessage(from,{text:formatPreview(d)})
 }
 
-/* OCR */
-if (!msg.message.imageMessage || !armedUsers[from]) return
+/* ===== OCR ===== */
 
-try {
+if(!msg.message.imageMessage||!armedUsers[from]) return
 
- const buf = await downloadMediaMessage(msg,'buffer')
- const file = path.join(IMAGE_DIR, Date.now()+'.jpg')
- fs.writeFileSync(file, buf)
+try{
 
- const processed = await preprocessImage(file)
- const { data } =
-   await Tesseract.recognize(processed,'eng+ind')
+ const buf=await downloadMediaMessage(msg,'buffer')
+ const file=path.join(IMAGE_DIR,Date.now()+'.jpg')
+ fs.writeFileSync(file,buf)
 
- const hash = hashReceipt(data.text)
- if (receiptHashes.has(hash)) {
+ const processed=await preprocessImage(file)
+ const {data}=await Tesseract.recognize(processed,'eng+ind')
+
+ if(data.confidence < 55){
+   pendingManual[from]=true
    armedUsers[from]=false
-   return sock.sendMessage(from,{text:'⚠️ Struk duplikat'})
- }
- receiptHashes.add(hash)
+   return sock.sendMessage(from,{text:
+`❌ OCR gagal
 
- const best = extractBestTotal(data.words)
- if (!best) throw new Error()
-
- const merchant = extractMerchant(data.text)
- const learnedCat = recallMerchantCategory(merchant)
-
- const d = {
-   MERCHANT: merchant,
-   TOTAL: best.value,
-   TANGGAL: extractDate(data.text)
-            || new Date().toLocaleDateString('id-ID'),
-   JAM: extractTime(data.text)
-        || new Date().toLocaleTimeString('id-ID'),
-   KATEGORI: learnedCat || detectCategory(data.text),
-   METODE: detectPayment(data.text),
-   OCR_CONF: Math.round(data.confidence)
+Input manual:
+total 15000
+merchant Indomaret
+kategori Belanja
+metode QRIS
+tanggal 17/02/2026
+jam 14:22`
+})
  }
 
- if (anomalyCheck(d.MERCHANT, d.TOTAL)) {
-   await sock.sendMessage(from,{
-     text:'⚠️ Nominal tidak biasa untuk merchant ini'
-   })
+ const best=extractBestTotal(data.words)
+ if(!best) throw new Error()
+
+ const d={
+  MERCHANT:extractMerchant(data.text),
+  TOTAL:best.value,
+  TANGGAL:extractDate(data.text)||new Date().toLocaleDateString('id-ID'),
+  JAM:extractTime(data.text)||new Date().toLocaleTimeString('id-ID'),
+  KATEGORI:recallMerchantCategory(extractMerchant(data.text)) || detectCategory(data.text),
+  METODE:detectPayment(data.text),
+  OCR_CONF:Math.round(data.confidence)
  }
 
  pendingConfirm[from]=d
  armedUsers[from]=false
 
- return sock.sendMessage(from,{
-   text: formatPreview(d)
- })
+ return sock.sendMessage(from,{text:formatPreview(d)})
 
-} catch {
+}catch{
+ pendingManual[from]=true
  armedUsers[from]=false
- return sock.sendMessage(from,{text:'❌ OCR gagal'})
+ return sock.sendMessage(from,{text:
+`❌ OCR gagal
+
+Input manual:
+total
+merchant
+kategori
+metode
+tanggal
+jam`
+})
 }
 
 })
