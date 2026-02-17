@@ -5,6 +5,7 @@ process.on('unhandledRejection', err => console.error('❌ Rejection:', err))
 /* ================= IMPORT ================= */
 const express = require('express')
 const QRCode = require('qrcode')
+const crypto = require('crypto')
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -23,90 +24,183 @@ const { GoogleSpreadsheet } = require('google-spreadsheet')
 /* ================= CONFIG ================= */
 const AUTH_DIR = '/data/auth'
 const IMAGE_DIR = '/data/images'
+const MEMORY_FILE = '/data/merchant_memory.json'
 const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 
-for (const dir of [AUTH_DIR, IMAGE_DIR]) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+for (const d of [AUTH_DIR, IMAGE_DIR]) {
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
 }
 
-/* ================= HTTP SERVER ================= */
+/* ================= MEMORY ================= */
+
+let merchantMemory = {}
+let receiptHashes = new Set()
+
+if (fs.existsSync(MEMORY_FILE)) {
+  merchantMemory = JSON.parse(fs.readFileSync(MEMORY_FILE))
+}
+
+function saveMemory() {
+  fs.writeFileSync(MEMORY_FILE, JSON.stringify(merchantMemory, null, 2))
+}
+
+/* ================= HTTP ================= */
+
 const app = express()
 let latestQR = null
 
-app.get('/', (_, res) => res.send('✅ WA Struk Bot running'))
+app.get('/', (_, res) => res.send('✅ AI Expense Engine running'))
 app.get('/qr', async (_, res) => {
-  if (!latestQR) return res.send('❌ QR belum tersedia')
-  res.send(`<img src="${await QRCode.toDataURL(latestQR)}" />`)
+  if (!latestQR) return res.send('QR belum ada')
+  res.send(`<img src="${await QRCode.toDataURL(latestQR)}"/>`)
 })
+
 app.listen(process.env.PORT || 3000)
 
-/* ================= GOOGLE CREDS ================= */
+/* ================= GOOGLE ================= */
+
 let CREDS = null
 if (process.env.GOOGLE_CREDS_JSON_BASE64) {
-  CREDS = JSON.parse(Buffer.from(process.env.GOOGLE_CREDS_JSON_BASE64, 'base64'))
+  CREDS = JSON.parse(Buffer.from(
+    process.env.GOOGLE_CREDS_JSON_BASE64,
+    'base64'
+  ))
 }
 
 /* ================= STATE ================= */
+
 const pendingConfirm = {}
-const armedUsers = {} // user yang sudah kirim "pingpong"
+const armedUsers = {}
 let starting = false
 
-/* ================= OCR HELPERS ================= */
-function extractTotal(text = '') {
-  const lines = text.split('\n')
-  for (const l of lines) {
-    if (/total|jumlah|grand|bayar|amount/i.test(l)) {
-      const n = l.replace(/\./g, '').match(/\d{3,}/g)
-      if (n) return Number(n[n.length - 1])
-    }
-  }
-  const fallback = text.replace(/\./g, '').match(/\d{4,}/g)
-  return fallback ? Math.max(...fallback.map(Number)) : null
+/* ================= AI HELPERS ================= */
+
+function hashReceipt(text) {
+  return crypto.createHash('md5')
+    .update(text.replace(/\s+/g,''))
+    .digest('hex')
 }
 
-function extractMerchant(text = '') {
-  return text.split('\n').map(l => l.trim()).filter(Boolean)[0]?.slice(0, 40) || 'Struk'
+function normalizeMerchant(name='') {
+  return name
+    .replace(/[^a-z0-9 ]/gi,'')
+    .toUpperCase()
+    .trim()
+    .slice(0,40)
 }
 
-function detectCategory(text = '') {
+function learnMerchant(merchant, kategori) {
+  const key = normalizeMerchant(merchant)
+  merchantMemory[key] = merchantMemory[key] || {}
+  merchantMemory[key].kategori = kategori
+  saveMemory()
+}
+
+function recallMerchantCategory(merchant) {
+  const key = normalizeMerchant(merchant)
+  return merchantMemory[key]?.kategori
+}
+
+function anomalyCheck(merchant, total) {
+  const key = normalizeMerchant(merchant)
+  const hist = merchantMemory[key]?.lastTotals || []
+  if (!hist.length) return false
+  const avg = hist.reduce((a,b)=>a+b,0)/hist.length
+  return total > avg * 3
+}
+
+function rememberTotal(merchant, total) {
+  const key = normalizeMerchant(merchant)
+  merchantMemory[key] = merchantMemory[key] || {}
+  merchantMemory[key].lastTotals = merchantMemory[key].lastTotals || []
+  merchantMemory[key].lastTotals.push(total)
+  merchantMemory[key].lastTotals =
+    merchantMemory[key].lastTotals.slice(-5)
+  saveMemory()
+}
+
+/* ================= OCR ================= */
+
+function normalizeTime(t='') {
+  const m = t.match(/^([01]?\d|2[0-3])[:.]([0-5]\d)$/)
+  return m ? `${m[1].padStart(2,'0')}:${m[2]}` : null
+}
+
+function extractTime(text='') {
+  const m = text.match(/\b([01]?\d|2[0-3])[:.][0-5]\d\b/)
+  return m ? normalizeTime(m[0]) : null
+}
+
+function extractDate(text='') {
+  return text.match(/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/)?.[0]
+}
+
+function extractMerchant(text='') {
+  return text.split('\n').find(Boolean)?.slice(0,40) || 'Struk'
+}
+
+function detectPayment(text='') {
+  const t = text.toLowerCase()
+  if (/qris/.test(t)) return 'QRIS'
+  if (/cash|tunai/.test(t)) return 'Cash'
+  if (/debit|kredit/.test(t)) return 'Card'
+  return 'Unknown'
+}
+
+function detectCategory(text='') {
   const t = text.toLowerCase()
   if (/alfamart|indomaret/.test(t)) return 'Belanja'
-  if (/kopi|cafe|resto|warung|bakso|ayam|mie|nasi/.test(t)) return 'Makan & Minum'
-  if (/grab|gojek|spbu|pertamina/.test(t)) return 'Transport'
-  if (/apotek|klinik/.test(t)) return 'Kesehatan'
-  if (/telkomsel|indosat|xl|tri/.test(t)) return 'Pulsa / Internet'
+  if (/resto|kopi|warung/.test(t)) return 'Makan & Minum'
+  if (/grab|gojek/.test(t)) return 'Transport'
   return 'Lainnya'
 }
 
-/* ================= IMAGE PREPROCESSING ================= */
-async function preprocessImage(filePath) {
-  const processedImage = await sharp(filePath)
-    .greyscale()               // Mengubah gambar menjadi grayscale
-    .normalize()               // Menormalkan kontras
-    .toBuffer()               // Mengubah menjadi buffer
-  return processedImage
+function extractBestTotal(words=[]) {
+  let best=null
+  for (const w of words) {
+    if (!/\d{3,}/.test(w.text)) continue
+    const v = Number(w.text.replace(/\D/g,''))
+    if (!v) continue
+    if (!best || w.confidence > best.conf)
+      best = { value:v, conf:w.confidence }
+  }
+  return best
 }
 
-/* ================= FORMAT PREVIEW ================= */
+/* ================= IMAGE PREPROCESS ================= */
+
+async function preprocessImage(fp) {
+  return sharp(fp)
+    .rotate()
+    .greyscale()
+    .normalize()
+    .sharpen()
+    .toBuffer()
+}
+
+/* ================= PREVIEW ================= */
+
 function formatPreview(d) {
-  return `
-🧾 *HASIL*
+return `
+🧾 *AI EXPENSE ANALYSIS*
 🏪 ${d.MERCHANT}
 📅 ${d.TANGGAL}
 ⏰ ${d.JAM}
 💰 Rp ${d.TOTAL.toLocaleString('id-ID')}
 📦 ${d.KATEGORI}
+💳 ${d.METODE}
+🔍 Conf ${d.OCR_CONF}
 
-Balas:
-Y / N
-edit nominal
-edit merchant
-edit kategori
-edit tanggal
+Balas Y / N
+edit nominal …
+edit merchant …
+edit kategori …
+edit jam …
 `
 }
 
-/* ================= SAVE TO SHEET ================= */
+/* ================= SHEET ================= */
+
 async function saveToSheet(data) {
   if (!CREDS) return
   const doc = new GoogleSpreadsheet(SHEET_ID)
@@ -116,178 +210,141 @@ async function saveToSheet(data) {
 }
 
 /* ================= BOT ================= */
+
 async function startBot() {
-  if (starting) return
-  starting = true
+if (starting) return
+starting = true
 
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
-  const { version } = await fetchLatestBaileysVersion()
+const { state, saveCreds } =
+  await useMultiFileAuthState(AUTH_DIR)
 
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    logger: Pino({ level: 'silent' }),
-    browser: ['WA Struk Bot', 'Chrome', '121']
-  })
+const { version } =
+  await fetchLatestBaileysVersion()
 
-  sock.ev.on('creds.update', saveCreds)
+const sock = makeWASocket({
+  version,
+  auth: state,
+  logger: Pino({ level:'silent' }),
+  browser:['AIExpense','Chrome','121']
+})
 
-  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
-    if (qr) latestQR = qr
-    if (connection === 'close') {
-      const r = lastDisconnect?.error?.output?.statusCode
-      if (r === DisconnectReason.loggedOut) {
-        fs.rmSync(AUTH_DIR, { recursive: true, force: true })
-      }
-      starting = false
-      setTimeout(startBot, 5000)
-    }
-    if (connection === 'open') starting = false
-  })
+sock.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    const msg = messages[0]
-    if (!msg?.message || msg.key.fromMe) return
+sock.ev.on('connection.update', ({connection,qr})=>{
+  if(qr) latestQR=qr
+  if(connection==='close'){
+    starting=false
+    setTimeout(startBot,5000)
+  }
+})
 
-    const from = msg.key.remoteJid
-    const text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      msg.message.imageMessage?.caption ||
-      ''
+sock.ev.on('messages.upsert', async ({messages})=>{
+const msg = messages[0]
+if (!msg?.message || msg.key.fromMe) return
 
-    /* ===== AKTIVASI PINGPONG ===== */
-    if (/^pingpong$/i.test(text)) {
-      armedUsers[from] = true
-      return sock.sendMessage(from, {
-        text: '🏓 Siap! Kirim gambar struk atau ketik manual sekarang.'
-      })
-    }
+const from = msg.key.remoteJid
+const text =
+ msg.message.conversation ||
+ msg.message.extendedTextMessage?.text ||
+ msg.message.imageMessage?.caption || ''
 
-    /* ===== CONFIRM MODE (SUPER FLEX & SMART PARSING) ===== */
-    if (pendingConfirm[from]) {
-      const d = pendingConfirm[from]
-      const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+/* ARM */
+if (/^pingpong$/i.test(text)) {
+ armedUsers[from]=true
+ return sock.sendMessage(from,{text:'📥 Kirim struk'})
+}
 
-      for (const line of lines) {
+/* CONFIRM */
+if (pendingConfirm[from]) {
+ const d = pendingConfirm[from]
 
-        // ===== KONFIRMASI =====
-        if (/^y$/i.test(line)) {
-          await saveToSheet(d)
-          delete pendingConfirm[from]
-          return sock.sendMessage(from, { text: '✅ TERSIMPAN' })
-        }
+ if (/^y$/i.test(text)) {
+   learnMerchant(d.MERCHANT, d.KATEGORI)
+   rememberTotal(d.MERCHANT, d.TOTAL)
+   await saveToSheet(d)
+   delete pendingConfirm[from]
+   return sock.sendMessage(from,{text:'✅ Disimpan'})
+ }
 
-        if (/^n$/i.test(line)) {
-          delete pendingConfirm[from]
-          return sock.sendMessage(from, { text: '❌ DIBATALKAN' })
-        }
+ if (/^n$/i.test(text)) {
+   delete pendingConfirm[from]
+   return sock.sendMessage(from,{text:'❌ Batal'})
+ }
 
-        // ============================== 
-        // 🔥 NOMINAL (PRIORITAS PALING ATAS)
-        // ==============================
+ if (/nominal/i.test(text))
+   d.TOTAL = Number(text.replace(/\D/g,''))
 
-        // 1️⃣ ANGKA DOANG → OVERRIDE TOTAL
-        if (/^\d{3,}$/.test(line)) {
-          d.TOTAL = Number(line)
-          continue
-        }
+ if (/kategori/i.test(text)) {
+   d.KATEGORI = text.split(' ').slice(1).join(' ')
+   learnMerchant(d.MERCHANT, d.KATEGORI)
+ }
 
-        // 2️⃣ edit nominal 5500 / nominal 5500 / total 5500
-        if (/^(edit\s*)?(nominal|total)\s*\d+/i.test(line)) {
-          const num = Number(line.replace(/\D/g, ''))
-          if (num) d.TOTAL = num
-          continue
-        }
+ if (/jam/i.test(text)) {
+   const t = normalizeTime(text.split(' ').pop())
+   if (t) d.JAM = t
+ }
 
-        // ==============================
-        // 🏪 MERCHANT
-        // ==============================
-        if (/^(edit\s*)?(merchant|toko|store)\s+/i.test(line)) {
-          d.MERCHANT = line.replace(/^(edit\s*)?(merchant|toko|store)/i, '').trim()
-          continue
-        }
+ return sock.sendMessage(from,{text:formatPreview(d)})
+}
 
-        // ==============================
-        // 📦 KATEGORI
-        // ==============================
-        if (/^(edit\s*)?(kategori|category)\s+/i.test(line)) {
-          d.KATEGORI = line.replace(/^(edit\s*)?(kategori|category)/i, '').trim()
-          continue
-        }
+/* OCR */
+if (!msg.message.imageMessage || !armedUsers[from]) return
 
-        // ==============================
-        // 📅 TANGGAL
-        // ==============================
-        if (/^(edit\s*)?(tanggal|date)\s+/i.test(line)) {
-          d.TANGGAL = line.replace(/^(edit\s*)?(tanggal|date)/i, '').trim()
-          continue
-        }
+try {
 
-        // AUTO TANGGAL
-        if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/.test(line)) {
-          d.TANGGAL = line
-        }
-      }
+ const buf = await downloadMediaMessage(msg,'buffer')
+ const file = path.join(IMAGE_DIR, Date.now()+'.jpg')
+ fs.writeFileSync(file, buf)
 
-      return sock.sendMessage(from, { text: formatPreview(d) })
-    }
+ const processed = await preprocessImage(file)
+ const { data } =
+   await Tesseract.recognize(processed,'eng+ind')
 
-    /* ===== MANUAL INPUT ===== */
-    if (/^manual/i.test(text)) {
-      if (!armedUsers[from]) return
+ const hash = hashReceipt(data.text)
+ if (receiptHashes.has(hash)) {
+   armedUsers[from]=false
+   return sock.sendMessage(from,{text:'⚠️ Struk duplikat'})
+ }
+ receiptHashes.add(hash)
 
-      const p = text.split(' ')
-      const total = Number(p[1])
-      const merchant = p[2] || 'Manual'
-      const kategori = p[3] || 'Lainnya'
-      const now = new Date()
+ const best = extractBestTotal(data.words)
+ if (!best) throw new Error()
 
-      pendingConfirm[from] = {
-        TANGGAL: now.toLocaleDateString('id-ID'),
-        JAM: now.toLocaleTimeString('id-ID'),
-        MERCHANT: merchant,
-        TOTAL: total,
-        KATEGORI: kategori
-      }
+ const merchant = extractMerchant(data.text)
+ const learnedCat = recallMerchantCategory(merchant)
 
-      delete armedUsers[from] // Setelah dipakai, dikunci lagi
+ const d = {
+   MERCHANT: merchant,
+   TOTAL: best.value,
+   TANGGAL: extractDate(data.text)
+            || new Date().toLocaleDateString('id-ID'),
+   JAM: extractTime(data.text)
+        || new Date().toLocaleTimeString('id-ID'),
+   KATEGORI: learnedCat || detectCategory(data.text),
+   METODE: detectPayment(data.text),
+   OCR_CONF: Math.round(data.confidence)
+ }
 
-      return sock.sendMessage(from, { text: formatPreview(pendingConfirm[from]) })
-    }
+ if (anomalyCheck(d.MERCHANT, d.TOTAL)) {
+   await sock.sendMessage(from,{
+     text:'⚠️ Nominal tidak biasa untuk merchant ini'
+   })
+ }
 
-    /* ===== IMAGE OCR ===== */
-    if (!msg.message.imageMessage) return
+ pendingConfirm[from]=d
+ armedUsers[from]=false
 
-    try {
-      if (!armedUsers[from]) return // Jika tidak pingpong, diam
+ return sock.sendMessage(from,{
+   text: formatPreview(d)
+ })
 
-      const buffer = await downloadMediaMessage(msg, 'buffer')
-      const file = path.join(IMAGE_DIR, Date.now() + '.jpg')
-      fs.writeFileSync(file, buffer)
+} catch {
+ armedUsers[from]=false
+ return sock.sendMessage(from,{text:'❌ OCR gagal'})
+}
 
-      const processedImage = await preprocessImage(file)
-      const { data } = await Tesseract.recognize(processedImage, 'eng+ind')
-      const total = extractTotal(data.text)
-      if (!total) throw new Error()
+})
 
-      const now = new Date()
-      pendingConfirm[from] = {
-        TANGGAL: now.toLocaleDateString('id-ID'),
-        JAM: now.toLocaleTimeString('id-ID'),
-        MERCHANT: extractMerchant(data.text),
-        TOTAL: total,
-        KATEGORI: detectCategory(data.text)
-      }
-
-      delete armedUsers[from] // Setelah diproses, dikunci lagi
-
-      return sock.sendMessage(from, { text: formatPreview(pendingConfirm[from]) })
-    } catch {
-      delete armedUsers[from]
-      return sock.sendMessage(from, { text: '❌ OCR gagal membaca struk' })
-    }
-  })
 }
 
 startBot()
