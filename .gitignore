@@ -3,5 +3,6 @@ auth/
 .env
 *.log
 
-# secrets
-someone.json
+# Google service account
+service-account.json
+oval-method-305400-8503d948fbf5.json
