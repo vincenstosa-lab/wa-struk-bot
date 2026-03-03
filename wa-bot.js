@@ -83,10 +83,20 @@ function rememberTotal(m,t){
 const app = express()
 let latestQR = null
 
-app.get('/', (_, res) => res.send('✅ AI Expense Engine running'))
 app.get('/qr', async (_, res) => {
-  if (!latestQR) return res.send('QR belum ada')
-  res.send(`<img src="${await QRCode.toDataURL(latestQR)}"/>`)
+  if (!latestQR) {
+    return res.send(`
+      <h2>QR belum tersedia</h2>
+      <script>setTimeout(()=>location.reload(),3000)</script>
+    `)
+  }
+
+  const qrImage = await QRCode.toDataURL(latestQR)
+  res.send(`
+    <h2>Scan QR WhatsApp</h2>
+    <img src="${qrImage}" />
+    <p>Refresh jika expired</p>
+  `)
 })
 
 app.listen(process.env.PORT || 3000)
@@ -326,22 +336,24 @@ const sock=makeWASocket({
 
 sock.ev.on('creds.update',saveCreds)
 
-sock.ev.on('connection.update',({connection,qr})=>{
-  console.log('Connection update:', connection)
+ssock.ev.on('connection.update',(update)=>{
+  const {connection,qr} = update
+
+  console.log('Connection update:', connection || 'no-state')
 
   if(qr){
     console.log('QR generated')
-    latestQR=qr
+    latestQR = qr
   }
 
-  if(connection==='open'){
+  if(connection === 'open'){
     console.log('WA CONNECTED')
-    latestQR=null
+    latestQR = null
   }
 
-  if(connection==='close'){
-    console.log('WA CLOSED - RESTART')
-    starting=false
+  if(connection === 'close'){
+    console.log('WA CLOSED')
+    starting = false
     setTimeout(startBot,5000)
   }
 })
