@@ -4,17 +4,6 @@ process.on('unhandledRejection', err => console.error('❌ Rejection:', err))
 
 /* ================= IMPORT ================= */
 const express = require('express')
-const app = express()
-
-const PORT = process.env.PORT || 3000
-
-app.get('/', (req, res) => {
-  res.send('Bot is running')
-})
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`)
-})
 const QRCode = require('qrcode')
 const crypto = require('crypto')
 const {
@@ -33,7 +22,7 @@ const { GoogleSpreadsheet } = require('google-spreadsheet')
 
 /* ================= CONFIG ================= */
 /* ================= CONFIG ================= */
-const BASE_DIR = path.join(__dirname, 'data')
+const BASE_DIR = path.join('/app/data')
 
 const AUTH_DIR = path.join(BASE_DIR, 'auth')
 const IMAGE_DIR = path.join(BASE_DIR, 'images')
@@ -105,21 +94,24 @@ app.listen(process.env.PORT || 3000)
 /* ================= GOOGLE ================= */
 
 let CREDS = null
-if (process.env.GOOGLE_CREDS_JSON_BASE64) {
- CREDS = JSON.parse(
-  Buffer.from(
-    process.env.GOOGLE_CREDS_JSON_BASE64,
-    'base64'
-  ).toString()
-)
+
+if (
+  process.env.GOOGLE_CREDS_JSON_BASE64 &&
+  process.env.GOOGLE_CREDS_JSON_BASE64.trim() !== ''
+) {
+  try {
+    CREDS = JSON.parse(
+      Buffer.from(
+        process.env.GOOGLE_CREDS_JSON_BASE64,
+        'base64'
+      ).toString()
+    )
+    console.log('✅ Google creds loaded')
+  } catch (err) {
+    console.error('❌ Invalid GOOGLE_CREDS_JSON_BASE64')
+    CREDS = null
+  }
 }
-
-/* ================= STATE ================= */
-
-const pendingConfirm = {}
-const pendingManual = {}
-const armedUsers = {}
-let starting = false
 
 /* ================= OCR HELPERS ================= */
 
