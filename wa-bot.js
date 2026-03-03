@@ -327,11 +327,23 @@ const sock=makeWASocket({
 sock.ev.on('creds.update',saveCreds)
 
 sock.ev.on('connection.update',({connection,qr})=>{
- if(qr) latestQR=qr
- if(connection==='close'){
-  starting=false
-  setTimeout(startBot,5000)
- }
+  console.log('Connection update:', connection)
+
+  if(qr){
+    console.log('QR generated')
+    latestQR=qr
+  }
+
+  if(connection==='open'){
+    console.log('WA CONNECTED')
+    latestQR=null
+  }
+
+  if(connection==='close'){
+    console.log('WA CLOSED - RESTART')
+    starting=false
+    setTimeout(startBot,5000)
+  }
 })
 
 sock.ev.on('messages.upsert', async ({messages})=>{
