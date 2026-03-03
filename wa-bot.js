@@ -29,6 +29,10 @@ const IMAGE_DIR = path.join(BASE_DIR, 'images')
 const MEMORY_FILE = path.join(BASE_DIR, 'merchant_memory.json')
 const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 
+let pendingConfirm = {}
+let armedUsers = {}
+let pendingManual = {}
+
 if (!fs.existsSync(BASE_DIR)) {
   fs.mkdirSync(BASE_DIR)
 }
