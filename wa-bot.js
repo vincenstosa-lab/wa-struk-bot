@@ -83,19 +83,25 @@ function rememberTotal(m,t){
 const app = express()
 let latestQR = null
 
-app.get('/qr', async (_, res) => {
+app.get('/qr', async (req, res) => {
   if (!latestQR) {
     return res.send(`
-      <h2>QR belum tersedia</h2>
-      <script>setTimeout(()=>location.reload(),3000)</script>
+      <h2>Menunggu QR...</h2>
+      <script>
+        setTimeout(() => location.reload(), 2000)
+      </script>
     `)
   }
 
   const qrImage = await QRCode.toDataURL(latestQR)
+
   res.send(`
     <h2>Scan QR WhatsApp</h2>
     <img src="${qrImage}" />
-    <p>Refresh jika expired</p>
+    <p>QR akan auto refresh jika expired</p>
+    <script>
+      setTimeout(() => location.reload(), 15000)
+    </script>
   `)
 })
 
