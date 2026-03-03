@@ -308,7 +308,12 @@ edit type Income / Expense / Transfer
 /* ================= SHEET ================= */
 
 async function saveToSheet(d){
- if(!CREDS) return
+ if(!CREDS){
+   console.log("❌ CREDS NOT FOUND")
+   return
+ }
+
+ console.log("Saving to sheet...")
 
  const doc = new GoogleSpreadsheet(SHEET_ID)
  await doc.useServiceAccountAuth(CREDS)
@@ -317,6 +322,8 @@ async function saveToSheet(d){
  const sheet = doc.sheetsByIndex[0]
 
  const id = crypto.randomUUID()
+
+ console.log("Sheet loaded:", doc.title)
 
  await sheet.addRow({
   ID: id,
