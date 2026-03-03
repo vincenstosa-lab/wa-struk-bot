@@ -309,7 +309,7 @@ async function saveToSheet(d){
 }
 
 /* ================= BOT ================= */
-
+let starting = false
 async function startBot(){
 if(starting) return
 starting=true
