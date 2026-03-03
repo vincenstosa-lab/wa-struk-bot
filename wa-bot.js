@@ -315,7 +315,7 @@ async function saveToSheet(d){
 
  console.log("Saving to sheet...")
 
- const doc = new GoogleSpreadsheet(SHEET_ID)
+ const doc = new GoogleSpreadsheet('1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4')
  await doc.useServiceAccountAuth(CREDS)
  await doc.loadInfo()
 
