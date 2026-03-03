@@ -342,7 +342,7 @@ const sock=makeWASocket({
 
 sock.ev.on('creds.update',saveCreds)
 
-ssock.ev.on('connection.update',(update)=>{
+sock.ev.on('connection.update',(update)=>{
   const {connection,qr} = update
 
   console.log('Connection update:', connection || 'no-state')
