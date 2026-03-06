@@ -248,7 +248,7 @@ if(splitMatch){
 }
 
 // ===== DETECT NOMINAL =====
-const amountMatch = text.match(/(\d+[.,]?\d*)\s?(k|rb|jt)?/)
+const amountMatch = text.match(/(\d+(?:[.,]\d+)?)\s?(k|rb|jt)?/)
 
 let total = 0
 
