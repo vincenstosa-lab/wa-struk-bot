@@ -545,10 +545,14 @@ sock.ev.on('connection.update',(update)=>{
   }
 
   if(connection === 'close'){
-    console.log('WA CLOSED')
-    starting = false
-    setTimeout(startBot,5000)
-  }
+  console.log('WA CLOSED')
+
+  const reason = update?.lastDisconnect?.error?.output?.statusCode
+  console.log('Reason:', reason)
+
+  starting = false
+  setTimeout(startBot,5000)
+}
 })
 
 sock.ev.on('messages.upsert', async ({messages})=>{
