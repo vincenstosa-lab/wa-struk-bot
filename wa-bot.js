@@ -32,6 +32,7 @@ const SHEET_ID = '1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4'
 let pendingConfirm = {}
 let armedUsers = {}
 let pendingManual = {}
+let lastSaved = {}
 
 if (!fs.existsSync(BASE_DIR)) {
   fs.mkdirSync(BASE_DIR)
@@ -187,11 +188,133 @@ function extractMerchant(text=''){
   return lines[0]?.slice(0,40) || 'Struk'
 }
 
+const ACCOUNT_KEYWORDS = {
+  bca: 'BCA',
+  mandiri: 'Mandiri',
+  bri: 'BRI',
+  bni: 'BNI',
+  gopay: 'GoPay',
+  ovo: 'OVO',
+  dana: 'DANA',
+  shopeepay: 'ShopeePay',
+  linkaja: 'LinkAja',
+  cash: 'Cash',
+  tunai: 'Cash'
+}
+
+const RECURRING_KEYWORDS = [
+'netflix',
+'spotify',
+'indihome',
+'pln',
+'pdam',
+'wifi',
+'internet',
+'icloud',
+'google storage',
+'youtube premium'
+]
+
 function detectPayment(text=''){
   if(/qris/i.test(text)) return 'QRIS'
   if(/cash|tunai/i.test(text)) return 'Cash'
   if(/debit|kredit/i.test(text)) return 'Card'
   return 'Unknown'
+}
+
+function detectAccount(text=''){
+  text = text.toLowerCase()
+
+  for(const key in ACCOUNT_KEYWORDS){
+    if(text.includes(key)){
+      return ACCOUNT_KEYWORDS[key]
+    }
+  }
+
+  return ''
+}
+
+function parseNaturalInput(text=''){
+
+text = text.toLowerCase()
+
+// ===== SPLIT DETECTION =====
+let split = 1
+const splitMatch = text.match(/\/\s*(\d+)/)
+
+if(splitMatch){
+  split = Number(splitMatch[1])
+  text = text.replace(splitMatch[0],'')
+}
+
+// ===== DETECT NOMINAL =====
+const amountMatch = text.match(/(\d+[.,]?\d*)\s?(k|rb|jt)?/)
+
+let total = 0
+
+if(amountMatch){
+
+  let num = Number(amountMatch[1].replace(',','.'))
+
+  const unit = amountMatch[2]
+
+  if(unit === 'k' || unit === 'rb')
+    num *= 1000
+
+  if(unit === 'jt')
+    num *= 1000000
+
+  total = Math.round(num)
+}
+
+// ===== APPLY SPLIT =====
+if(split > 1){
+  total = Math.round(total / split)
+}
+
+// ===== TYPE DETECTION =====
+let type = 'Expense'
+
+if(/gaji|salary|income|masuk|refund/i.test(text))
+  type = 'Income'
+
+if(/transfer/i.test(text))
+  type = 'Transfer'
+
+// ===== MERCHANT =====
+let merchant = text
+  .replace(amountMatch?.[0] || '','')
+  .replace(/cash|qris|debit|kredit|gopay|ovo|dana/gi,'')
+  .trim()
+
+if(!merchant)
+  merchant = 'Manual'
+
+return {
+  total,
+  merchant,
+  type,
+  split
+}
+
+}
+
+ 
+function getDateTime() {
+  const now = new Date()
+
+  const date = now.toLocaleDateString('id-ID', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  })
+
+  const time = now.toLocaleTimeString('id-ID', {
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+
+  return { date, time }
 }
 
 function detectCategory(text=''){
@@ -219,6 +342,20 @@ function detectCategory(text=''){
     return 'Tagihan'
 
   return 'Lainnya'
+}
+
+function detectRecurring(text=''){
+
+text = text.toLowerCase()
+
+for(const r of RECURRING_KEYWORDS){
+  if(text.includes(r)){
+    return true
+  }
+}
+
+return false
+
 }
 
 function extractSmartTotal(text='', words=[]){
@@ -262,7 +399,10 @@ function extractSmartTotal(text='', words=[]){
     if(blacklist.test(w.line?.text || '')) continue
 
     const v=Number(w.text.replace(/\D/g,''))
-    if(!v) continue
+
+if(v > 100000000) continue
+
+if(!v) continue
 
     if(!best || w.confidence > best.conf)
       best={value:v,conf:w.confidence}
@@ -272,7 +412,13 @@ function extractSmartTotal(text='', words=[]){
 }
 
 async function preprocessImage(fp){
-  return sharp(fp).rotate().greyscale().normalize().sharpen().toBuffer()
+  return sharp(fp)
+    .rotate()
+    .resize(1200) // mengecilkan gambar supaya OCR cepat
+    .greyscale()
+    .normalize()
+    .sharpen()
+    .toBuffer()
 }
 
 /* ================= PREVIEW ================= */
@@ -287,6 +433,7 @@ return `
 💰 Rp ${(d.TOTAL || 0).toLocaleString('id-ID')}
 📦 ${d.KATEGORI}
 💳 ${d.METODE}
+📝 ${d.KETERANGAN || '-'}
 🏦 Dari: ${d.AKUN_ASAL || '-'}
 🏦 Ke: ${d.AKUN_TUJUAN || '-'}
 🔍 Conf ${d.OCR_CONF}
@@ -307,7 +454,8 @@ edit type Income / Expense / Transfer
 
 /* ================= SHEET ================= */
 
-async function saveToSheet(d){
+async function saveToSheet(d, user){
+
  if(!CREDS){
    console.log("❌ CREDS NOT FOUND")
    return
@@ -315,15 +463,13 @@ async function saveToSheet(d){
 
  console.log("Saving to sheet...")
 
- const doc = new GoogleSpreadsheet('1qjSndza2fwNhkQ6WzY9DGhunTHV7cllbs75dnG5I6r4')
+ const doc = new GoogleSpreadsheet(SHEET_ID)
  await doc.useServiceAccountAuth(CREDS)
  await doc.loadInfo()
 
  const sheet = doc.sheetsByIndex[0]
 
  const id = crypto.randomUUID()
-
- console.log("Sheet loaded:", doc.title)
 
  await sheet.addRow({
   ID: id,
@@ -334,9 +480,16 @@ async function saveToSheet(d){
   TOTAL: d.TOTAL,
   KATEGORI: d.KATEGORI,
   METODE: d.METODE,
+  KETERANGAN: d.KETERANGAN,
   AKUN_ASAL: d.AKUN_ASAL,
   AKUN_TUJUAN: d.AKUN_TUJUAN
  })
+
+ // 🔥 simpan id transaksi terakhir
+ lastSaved[user] = id
+
+ console.log("Saved:", id)
+
 }
 
 /* ================= BOT ================= */
@@ -395,6 +548,45 @@ if(/^pingpong$/i.test(text)){
  return sock.sendMessage(from,{text:'📥 Kirim struk atau ketik manual'})
 }
 
+/* ===== NATURAL INPUT ===== */
+/* ===== NATURAL INPUT ===== */
+if(armedUsers[from] && text && !msg.message.imageMessage){
+
+ const parsed = parseNaturalInput(text)
+
+ if(parsed.total){
+
+   const accountDetected = detectAccount(text)
+
+   const d = {
+     TYPE: parsed.type,
+     MERCHANT: parsed.merchant,
+     TOTAL: parsed.total,
+     AKUN_ASAL: accountDetected,
+     AKUN_TUJUAN:'',
+     TANGGAL:new Date().toLocaleDateString('id-ID',{
+       day:'2-digit',
+       month:'2-digit',
+       year:'numeric'
+     }),
+     JAM:new Date().toLocaleTimeString('id-ID',{
+       hour:'2-digit',
+       minute:'2-digit'
+     }),
+     KATEGORI: recallMerchantCategory(parsed.merchant) || detectCategory(text),
+     METODE: detectPayment(text),
+     KETERANGAN: detectRecurring(text) ? 'Recurring' : '',
+     OCR_CONF:100
+   }
+
+   pendingConfirm[from]=d
+   armedUsers[from]=false
+
+   return sock.sendMessage(from,{text:formatPreview(d)})
+ }
+
+}
+
 // ===== GUARD =====
 if(pendingConfirm[from] && /^manual$/i.test(text)){
   return sock.sendMessage(from,{text:'❗ Selesaikan konfirmasi dulu (Y / N)'})
@@ -412,6 +604,7 @@ total
 merchant
 kategori
 metode
+keterangan
 asal
 tujuan
 tanggal
@@ -429,6 +622,7 @@ if(pendingManual[from]){
   TYPE:'Expense',
   MERCHANT:'Manual',
   TOTAL:0,
+  KETERANGAN:'',
   AKUN_ASAL:'',
   AKUN_TUJUAN:'',
   TANGGAL:new Date().toLocaleDateString('id-ID'),
@@ -469,6 +663,10 @@ if(/type/i.test(l)){
   // ===== METODE =====
   if(/metode/i.test(l))
     d.METODE=l.split(' ').slice(1).join(' ')
+
+  // ===== KETERANGAN =====
+if(/keterangan/i.test(l))
+  d.KETERANGAN = l.split(' ').slice(1).join(' ')
 
   // ===== AKUN ASAL =====
   if(/asal/i.test(l))
@@ -529,7 +727,7 @@ if(pendingConfirm[from]){
 
    learnMerchant(d.MERCHANT,d.KATEGORI)
    rememberTotal(d.MERCHANT,d.TOTAL)
-   await saveToSheet(d)
+   await saveToSheet(d, from)
    delete pendingConfirm[from]
    return sock.sendMessage(from,{text:'✅ Disimpan'})
 }
@@ -545,31 +743,35 @@ if(pendingConfirm[from]){
    else d.TYPE='Expense'
  }
 
-if(/^edit nominal/i.test(text)){
+if(/^(edit )?nominal/i.test(text)){
   const v = Number(text.replace(/\D/g,''))
   if(v > 0) d.TOTAL = v
 }
 
-if(/^edit merchant/i.test(text))
-  d.MERCHANT = text.split(' ').slice(2).join(' ')
+if(/^(edit )?merchant/i.test(text))
+  d.MERCHANT = text.split(' ').slice(1).join(' ')
 
-if(/^edit kategori/i.test(text))
-  d.KATEGORI = text.split(' ').slice(2).join(' ')
+if(/^(edit )?kategori/i.test(text))
+  d.KATEGORI = text.split(' ').slice(1).join(' ')
 
-if(/^edit metode/i.test(text))
-  d.METODE = text.split(' ').slice(2).join(' ')
-if(/^edit asal/i.test(text))
-  d.AKUN_ASAL = text.split(' ').slice(2).join(' ')
+if(/^(edit )?metode/i.test(text))
+  d.METODE = text.split(' ').slice(1).join(' ')
 
-if(/^edit tujuan/i.test(text))
-  d.AKUN_TUJUAN = text.split(' ').slice(2).join(' ')
+if(/^(edit )?(ket|keterangan)/i.test(text))
+  d.KETERANGAN = text.split(' ').slice(1).join(' ')
 
-if(/^edit jam/i.test(text)){
+if(/^(edit )?asal/i.test(text))
+  d.AKUN_ASAL = text.split(' ').slice(1).join(' ')
+
+if(/^(edit )?tujuan/i.test(text))
+  d.AKUN_TUJUAN = text.split(' ').slice(1).join(' ')
+
+if(/^(edit )?jam/i.test(text)){
   const t = normalizeTime(text.split(' ').pop())
   if(t) d.JAM = t
 }
 
-if(/^edit tanggal/i.test(text)){
+if(/^(edit )?tanggal/i.test(text)){
   const dt = normalizeDate(text)
   if(dt) d.TANGGAL = dt
 }
@@ -586,6 +788,35 @@ if(d.TYPE === 'Transfer'){
   }
 }
  return sock.sendMessage(from,{text:formatPreview(d)})
+}
+
+/* ===== UNDO LAST SAVE ===== */
+if(/^undo$/i.test(text)){
+
+  const lastId = lastSaved[from]
+
+  if(!lastId){
+    return sock.sendMessage(from,{text:'❌ Tidak ada transaksi yang bisa di-undo'})
+  }
+
+  const doc = new GoogleSpreadsheet(SHEET_ID)
+  await doc.useServiceAccountAuth(CREDS)
+  await doc.loadInfo()
+
+  const sheet = doc.sheetsByIndex[0]
+  const rows = await sheet.getRows()
+
+  const row = rows.find(r => r.ID === lastId)
+
+  if(!row){
+    return sock.sendMessage(from,{text:'❌ Data tidak ditemukan'})
+  }
+
+  await row.delete()
+
+  delete lastSaved[from]
+
+  return sock.sendMessage(from,{text:'↩️ Transaksi terakhir dibatalkan'})
 }
 
 /* ===== OCR ===== */
@@ -614,17 +845,19 @@ if(!best){
 }
 
 const merchant = extractMerchant(data.text)
+const accountDetected = detectAccount(data.text)
 
 const d = {
   TYPE:'Expense',
   MERCHANT: merchant,
   TOTAL: best.value,
-  AKUN_ASAL:'',
+  AKUN_ASAL: accountDetected,
   AKUN_TUJUAN:'',
   TANGGAL:new Date().toLocaleDateString('id-ID'),
   JAM:new Date().toLocaleTimeString('id-ID'),
   KATEGORI: recallMerchantCategory(merchant) || detectCategory(data.text),
   METODE: detectPayment(data.text),
+  KETERANGAN: detectRecurring(data.text) ? 'Recurring' : '', 
   OCR_CONF: Math.round(data.confidence)
 }
 
