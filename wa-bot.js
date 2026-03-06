@@ -248,15 +248,15 @@ if(splitMatch){
 }
 
 // ===== DETECT NOMINAL =====
-const amountMatch = text.match(/(\d+(?:[.,]\d+)?)\s?(k|rb|jt)?/)
-
+const amountMatch =
+  text.match(/(\d+(?:[.,]\d+)?)(?:\s?(k|rb|jt))/) ||
+  text.match(/\b\d{4,}\b/)
 let total = 0
 
 if(amountMatch){
 
- let num = Number(amountMatch[1].replace(',','.'))
-
- const unit = amountMatch[2]
+let num = parseFloat(amountMatch[1].replace(',', '.'))
+const unit = amountMatch[2] || ''
 
  if(unit === 'k' || unit === 'rb')
   num *= 1000
@@ -284,18 +284,19 @@ if(/transfer/i.test(text))
 
 // ===== MERCHANT =====
 let merchant = text
-  .replace(amountMatch?.[0] || '','')
-  .replace(/cash|qris|debit|kredit|gopay|ovo|dana/gi,'')
+  .replace(amountMatch?.[0] || '', '')
+  .replace(/\b(gaji|salary|income|masuk|refund|transfer)\b/gi,'')
+  .replace(/\b(cash|qris|debit|kredit|gopay|ovo|dana|bca|bri|bni|mandiri|shopeepay)\b/gi,'')
   .trim()
 
 if(!merchant)
   merchant = 'Manual'
 
 return {
-  total,
-  merchant,
-  type,
-  split
+ total,
+ merchant,
+ type,
+ split
 }
 
 }
@@ -577,6 +578,25 @@ if(armedUsers[from] && text && !msg.message.imageMessage){
 
  const parsed = parseNaturalInput(text)
 
+ const words = text.split(/\s+/)
+
+let akunAsal=''
+let akunTujuan=''
+
+for(const w of words){
+
+ const acc = detectAccount(w)
+
+ if(acc && !akunAsal){
+   akunAsal = acc
+ }
+ else if(acc && !akunTujuan){
+   akunTujuan = acc
+ }
+
+}
+
+
  if(parsed.total){
 
    const accountDetected = detectAccount(text)
@@ -585,8 +605,8 @@ if(armedUsers[from] && text && !msg.message.imageMessage){
      TYPE: parsed.type,
      MERCHANT: parsed.merchant,
      TOTAL: parsed.total,
-     AKUN_ASAL: accountDetected,
-     AKUN_TUJUAN:'',
+    AKUN_ASAL: akunAsal || accountDetected, 
+    AKUN_TUJUAN: parsed.akunTujuan || '',
      TANGGAL:new Date().toLocaleDateString('id-ID',{
        day:'2-digit',
        month:'2-digit',
@@ -769,7 +789,7 @@ if(pendingConfirm[from]){
    return sock.sendMessage(from,{text:'❌ Batal'})
  }
 
- if(/^edit type/i.test(text)){
+ if(/^(edit )?type/i.test(text)){
    if(/income/i.test(text)) d.TYPE='Income'
    else if(/transfer/i.test(text)) d.TYPE='Transfer'
    else d.TYPE='Expense'
@@ -780,38 +800,51 @@ if(/^(edit )?nominal/i.test(text)){
   if(v > 0) d.TOTAL = v
 }
 
-// EDIT MERCHANT
-if(/^(edit )?merchant/i.test(text))
-d.MERCHANT = text.replace(/^(edit )?merchant\s*/i,'').trim()
-
-// EDIT KATEGORI
-if(/^(edit )?kategori/i.test(text))
-d.KATEGORI = text.replace(/^(edit )?kategori\s*/i,'').trim()
-
-// EDIT METODE
-if(/^(edit )?metode/i.test(text))
-d.METODE = text.replace(/^(edit )?metode\s*/i,'').trim()
-
-// EDIT KETERANGAN
-if(/^(edit )?(ket|keterangan)/i.test(text))
-d.KETERANGAN = text.replace(/^(edit )?(ket|keterangan)\s*/i,'').trim()
-
-// EDIT ASAL
-if(/^(edit )?asal/i.test(text))
-d.AKUN_ASAL = text.replace(/^(edit )?asal\s*/i,'').trim()
-
-// EDIT TUJUAN
-if(/^(edit )?tujuan/i.test(text))
-d.AKUN_TUJUAN = text.replace(/^(edit )?tujuan\s*/i,'').trim()
-
-if(/^(edit )?jam/i.test(text)){
-  const t = normalizeTime(text.split(' ').pop())
-  if(t) d.JAM = t
+if(/^(edit )?merchant\b/i.test(text)){
+  d.MERCHANT = text.replace(/^(edit )?merchant\b/i,'').trim()
+  return sock.sendMessage(from,{text:formatPreview(d)})
 }
 
-if(/^(edit )?tanggal/i.test(text)){
-  const dt = normalizeDate(text)
+// EDIT KATEGORI
+if(/^(edit )?kategori\b/i.test(text)){
+  d.KATEGORI = text.replace(/^(edit )?kategori\b/i,'').trim()
+  return sock.sendMessage(from,{text:formatPreview(d)})
+}
+
+// EDIT METODE
+if(/^(edit )?metode\b/i.test(text)){
+  d.METODE = text.replace(/^(edit )?metode\b/i,'').trim()
+  return sock.sendMessage(from,{text:formatPreview(d)})
+}
+
+if(/^(edit )?(ket|keterangan)\b/i.test(text)){
+  d.KETERANGAN = text.replace(/^(edit )?(ket|keterangan)\b/i,'').trim()
+  return sock.sendMessage(from,{text:formatPreview(d)})
+}
+
+// EDIT ASAL
+if(/^(edit )?asal\b/i.test(text)){
+  d.AKUN_ASAL = text.replace(/^(edit )?asal\b/i,'').trim()
+  return sock.sendMessage(from,{text:formatPreview(d)})
+}
+
+// EDIT TUJUAN
+if(/^(edit )?tujuan\b/i.test(text)){
+  d.AKUN_TUJUAN = text.replace(/^(edit )?tujuan\b/i,'').trim()
+  return sock.sendMessage(from,{text:formatPreview(d)})
+}
+
+if(/^(edit )?jam\b/i.test(text)){
+  const t = normalizeTime(text.replace(/^(edit )?jam\b/i,'').trim())
+  if(t) d.JAM = t
+  return sock.sendMessage(from,{text:formatPreview(d)})
+
+}
+
+if(/^(edit )?tanggal\b/i.test(text)){
+  const dt = normalizeDate(text.replace(/^(edit )?tanggal\b/i,'').trim())
   if(dt) d.TANGGAL = dt
+  return sock.sendMessage(from,{text:formatPreview(d)})
 }
 
  // 🔥 AUTO ACCOUNT LOGIC HARUS DI SINI
