@@ -254,17 +254,18 @@ let total = 0
 
 if(amountMatch){
 
-  let num = Number(amountMatch[1].replace(',','.'))
+ let num = Number(amountMatch[1].replace(',','.'))
 
-  const unit = amountMatch[2]
+ const unit = amountMatch[2]
 
-  if(unit === 'k' || unit === 'rb')
-    num *= 1000
+ if(unit === 'k' || unit === 'rb')
+  num *= 1000
 
-  if(unit === 'jt')
-    num *= 1000000
+ if(unit === 'jt')
+  num *= 1000000
 
-  total = Math.round(num)
+ total = Math.round(num)
+
 }
 
 // ===== APPLY SPLIT =====
@@ -425,7 +426,7 @@ async function preprocessImage(fp){
 
 function formatPreview(d){
 return `
-🧾 * FINANCE ANALYSIS*
+🧾 *FINANCE ANALYSIS*
 📌 Type: ${d.TYPE || 'Expense'}
 🏪 ${d.MERCHANT}
 📅 ${d.TANGGAL}
@@ -493,6 +494,23 @@ async function saveToSheet(d, user){
 
 }
 
+
+function parseFinanceText(text) {
+  const get = (regex) => {
+    const m = text.match(regex)
+    return m ? m[1].trim() : ''
+  }
+
+  return {
+    merchant: get(/Merchant\s*(.*)/i),
+    kategori: get(/Kategori\s*(.*)/i),
+    metode: get(/Metode\s*(.*)/i),
+    asal: get(/asal\s*(.*)/i),
+    jam: get(/Jam\s*([0-9]{1,2}[.:][0-9]{2})/i),
+    keterangan: get(/Keterangan\s*(.*)/i),
+    nominal: get(/Rp\s*([\d.]+)/i)
+  }
+}
 /* ================= BOT ================= */
 let starting = false
 async function startBot(){
@@ -636,7 +654,7 @@ if(pendingManual[from]){
 for(const l of lines){
 
   // ===== TYPE =====
-  // ===== TYPE =====
+
 if(/type/i.test(l)){
   if(/income/i.test(l)){
     d.TYPE='Income'
@@ -650,44 +668,53 @@ if(/type/i.test(l)){
 }
 
   // ===== TOTAL =====
-  if(/total/i.test(l))
-    d.TOTAL=Number(l.replace(/\D/g,''))
+  // EDIT MERCHANT
 
-  // ===== MERCHANT =====
-  if(/merchant/i.test(l))
-    d.MERCHANT=l.split(' ').slice(1).join(' ')
+ if(/type/i.test(l)){
+  if(/income/i.test(l)) d.TYPE='Income'
+  else if(/transfer/i.test(l)) d.TYPE='Transfer'
+  else d.TYPE='Expense'
+ }
 
-  // ===== KATEGORI =====
-  if(/kategori/i.test(l))
-    d.KATEGORI=l.split(' ').slice(1).join(' ')
+ if(/total/i.test(l)){
+  const v = Number(l.replace(/\D/g,''))
+  if(v) d.TOTAL = v
+ }
 
-  // ===== METODE =====
-  if(/metode/i.test(l))
-    d.METODE=l.split(' ').slice(1).join(' ')
+ if(/merchant/i.test(l)){
+  d.MERCHANT = l.replace(/merchant/i,'').trim()
+ }
 
-  // ===== KETERANGAN =====
-if(/keterangan/i.test(l))
-  d.KETERANGAN = l.split(' ').slice(1).join(' ')
+ if(/kategori/i.test(l)){
+  d.KATEGORI = l.replace(/kategori/i,'').trim()
+ }
 
-  // ===== AKUN ASAL =====
-  if(/asal/i.test(l))
-    d.AKUN_ASAL=l.split(' ').slice(1).join(' ')
+ if(/metode/i.test(l)){
+  d.METODE = l.replace(/metode/i,'').trim()
+ }
 
-  // ===== AKUN TUJUAN =====
-  if(/tujuan/i.test(l))
-    d.AKUN_TUJUAN=l.split(' ').slice(1).join(' ')
+ if(/keterangan/i.test(l)){
+  d.KETERANGAN = l.replace(/keterangan/i,'').trim()
+ }
 
-  // ===== JAM =====
-  if(/jam/i.test(l)){
-    const t=normalizeTime(l.split(' ').pop())
-    if(t) d.JAM=t
-  }
+ if(/asal/i.test(l)){
+  d.AKUN_ASAL = l.replace(/asal/i,'').trim()
+ }
 
-  // ===== TANGGAL =====
-  if(/tanggal/i.test(l)){
-    const dt=normalizeDate(l)
-    if(dt) d.TANGGAL=dt
-  }
+ if(/tujuan/i.test(l)){
+  d.AKUN_TUJUAN = l.replace(/tujuan/i,'').trim()
+ }
+
+ if(/jam/i.test(l)){
+  const t = normalizeTime(l.split(' ').pop())
+  if(t) d.JAM = t
+ }
+
+ if(/tanggal/i.test(l)){
+  const dt = normalizeDate(l)
+  if(dt) d.TANGGAL = dt
+ }
+
 }
 
 // ================================
@@ -749,23 +776,29 @@ if(/^(edit )?nominal/i.test(text)){
   if(v > 0) d.TOTAL = v
 }
 
+// EDIT MERCHANT
 if(/^(edit )?merchant/i.test(text))
-  d.MERCHANT = text.split(' ').slice(1).join(' ')
+d.MERCHANT = text.replace(/^(edit )?merchant\s*/i,'').trim()
 
+// EDIT KATEGORI
 if(/^(edit )?kategori/i.test(text))
-  d.KATEGORI = text.split(' ').slice(1).join(' ')
+d.KATEGORI = text.replace(/^(edit )?kategori\s*/i,'').trim()
 
+// EDIT METODE
 if(/^(edit )?metode/i.test(text))
-  d.METODE = text.split(' ').slice(1).join(' ')
+d.METODE = text.replace(/^(edit )?metode\s*/i,'').trim()
 
+// EDIT KETERANGAN
 if(/^(edit )?(ket|keterangan)/i.test(text))
-  d.KETERANGAN = text.split(' ').slice(1).join(' ')
+d.KETERANGAN = text.replace(/^(edit )?(ket|keterangan)\s*/i,'').trim()
 
+// EDIT ASAL
 if(/^(edit )?asal/i.test(text))
-  d.AKUN_ASAL = text.split(' ').slice(1).join(' ')
+d.AKUN_ASAL = text.replace(/^(edit )?asal\s*/i,'').trim()
 
+// EDIT TUJUAN
 if(/^(edit )?tujuan/i.test(text))
-  d.AKUN_TUJUAN = text.split(' ').slice(1).join(' ')
+d.AKUN_TUJUAN = text.replace(/^(edit )?tujuan\s*/i,'').trim()
 
 if(/^(edit )?jam/i.test(text)){
   const t = normalizeTime(text.split(' ').pop())
