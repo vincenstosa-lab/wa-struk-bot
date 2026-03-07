@@ -3,6 +3,7 @@ process.on('uncaughtException', err => console.error('❌ Uncaught:', err))
 process.on('unhandledRejection', err => console.error('❌ Rejection:', err))
 
 /* ================= IMPORT ================= */
+let OCR_RUNNING = false
 const lastOCR = {}
 const express = require('express')
 const QRCode = require('qrcode')
@@ -22,7 +23,6 @@ const sharp = require('sharp')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
 // ===== GLOBAL OCR WORKER =====
 let ocrWorker = null
-let ocrQueue = Promise.resolve()
 process.on('SIGINT', async ()=>{
   console.log('Stopping OCR worker...')
   if(ocrWorker){
@@ -595,13 +595,23 @@ sock.ev.on('connection.update',(update)=>{
   setTimeout(startBot,5000)
 }
 })
+const processedMessages = new Set()
+setInterval(()=>{
+  processedMessages.clear()
+  console.log("🧹 message cache cleared")
+},300000)
 
 sock.ev.on('messages.upsert', async ({ messages }) => {
 
  try{
 
   const m = messages[0]
+
   if(!m.message) return
+  if(m.key.fromMe) return
+
+  if(processedMessages.has(m.key.id)) return
+  processedMessages.add(m.key.id)
 
   await processMessage(m)
 
@@ -626,7 +636,7 @@ function getText(m){
 }
 
 const text = getText(m)
-const from = m.key.remoteJid
+const from = m.key.participant || m.key.remoteJid
 
 /* ===== ARM ===== */
 if(/^pingpong$/i.test(text)){
@@ -943,88 +953,118 @@ if(/^undo$/i.test(text)){
 
   return sock.sendMessage(from,{text:'↩️ Transaksi terakhir dibatalkan'})
 }
+
 /* ===== OCR ===== */
 /* ===== OCR ===== */
+
 if(!m.message.imageMessage || !armedUsers[from]) return
 
-// ===== OCR RATE LIMITER =====
+// hanya 1 OCR berjalan
+if(OCR_RUNNING){
+  return sock.sendMessage(from,{
+    text:'⏳ OCR sedang memproses struk lain'
+  })
+}
+
+// rate limit user
 if(Date.now() - (lastOCR[from] || 0) < 5000){
   return sock.sendMessage(from,{
     text:'⏳ Tunggu 5 detik sebelum kirim struk lagi'
   })
 }
 
+OCR_RUNNING = true
 lastOCR[from] = Date.now()
 
 try{
+
   let buf = await downloadMediaMessage(
-  m,
-  'buffer',
-  {},
-  { logger: Pino({ level: 'silent' }) }
-)
- const processed = await preprocessImage(buf)
- buf = null
+    m,
+    'buffer',
+    {},
+    { logger: Pino({ level: 'silent' }) }
+  )
 
-if(!ocrWorker){
-  console.log("⚠ OCR worker restart")
-  await initOCR()
-}
+  const processed = await preprocessImage(buf)
+  buf = null
 
-const result = await Promise.race([
-  ocrQueue = ocrQueue.then(() => ocrWorker.recognize(processed)),
-  new Promise((_,reject)=>setTimeout(()=>reject('OCR timeout'),15000))
-])
+  if(!ocrWorker){
+    console.log("⚠ OCR worker restart")
+    await initOCR()
+  }
 
-const { data } = result
+  const result = await Promise.race([
+    ocrWorker.recognize(processed),
+    new Promise((_,reject)=>setTimeout(()=>reject('OCR timeout'),15000))
+  ])
 
+  const { data } = result
 
+  const best = extractSmartTotal(data.text, data.words)
 
-const best = extractSmartTotal(data.text, data.words)
+  if(!best){
+    await sock.sendMessage(from,{
+      text:'❌ Tidak bisa menemukan TOTAL di struk.\nKetik manual 50000 atau kirim ulang foto.'
+    })
+    return
+  }
 
-if(!best){
-  await sock.sendMessage(from,{
-    text:'❌ Tidak bisa menemukan TOTAL di struk.\nKetik manual 50000 atau kirim ulang foto yang lebih jelas.'
-  })
-  return
-}
+  const merchant = extractMerchant(data.text)
+  const accountDetected = detectAccount(data.text)
 
-const merchant = extractMerchant(data.text)
-const accountDetected = detectAccount(data.text)
+  const d = {
+    TYPE:'Expense',
+    MERCHANT: merchant,
+    TOTAL: best.value,
+    AKUN_ASAL: accountDetected,
+    AKUN_TUJUAN:'',
+    TANGGAL:new Date().toLocaleDateString('id-ID'),
+    JAM:new Date().toLocaleTimeString('id-ID'),
+    KATEGORI: recallMerchantCategory(merchant) || detectCategory(data.text),
+    METODE: detectPayment(data.text),
+    KETERANGAN: detectRecurring(data.text) ? 'Recurring' : '',
+    OCR_CONF: Math.round(data.confidence)
+  }
 
-const d = {
-  TYPE:'Expense',
-  MERCHANT: merchant,
-  TOTAL: best.value,
-  AKUN_ASAL: accountDetected,
-  AKUN_TUJUAN:'',
-  TANGGAL:new Date().toLocaleDateString('id-ID'),
-  JAM:new Date().toLocaleTimeString('id-ID'),
-  KATEGORI: recallMerchantCategory(merchant) || detectCategory(data.text),
-  METODE: detectPayment(data.text),
-  KETERANGAN: detectRecurring(data.text) ? 'Recurring' : '', 
-  OCR_CONF: Math.round(data.confidence)
-}
+  pendingConfirm[from]=d
+  armedUsers[from]=false
 
- pendingConfirm[from]=d
- armedUsers[from]=false
- return sock.sendMessage(from,{text:formatPreview(d)})
+  return sock.sendMessage(from,{text:formatPreview(d)})
 
 }catch(err){
 
- console.log("OCR ERROR:",err)
+  console.log("OCR ERROR:",err)
 
- ocrWorker = null
+  ocrWorker = null
 
- pendingManual[from]=true
- armedUsers[from]=false
- return sock.sendMessage(from,{text:'❌ OCR gagal, ketik manual'})
+  pendingManual[from]=true
+  armedUsers[from]=false
+
+  return sock.sendMessage(from,{
+    text:'❌ OCR gagal, ketik manual'
+  })
+
+}finally{
+
+  OCR_RUNNING = false
+
 }
 
 }
 
 }
+setInterval(()=>{
 
+  const ram = process.memoryUsage().rss / 1024 / 1024
+
+  console.log("RAM:",ram.toFixed(0),"MB")
+
+  if(ram > 220){
+    console.log("⚠ RAM limit restart")
+    process.exit(1)
+  }
+
+},20000)
 (async ()=>{
   await initOCR()
   await initSheet()
