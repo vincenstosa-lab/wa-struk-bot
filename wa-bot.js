@@ -1,16 +1,8 @@
 /* ================= SAFE GUARD ================= */
 process.on('uncaughtException', err => console.error('❌ Uncaught:', err))
 process.on('unhandledRejection', err => console.error('❌ Rejection:', err))
-process.on('SIGTERM', async ()=>{
-  console.log('SIGTERM received')
-  if(ocrWorker){
-    await ocrWorker.terminate()
-  }
-  process.exit(0)
-})
+
 /* ================= IMPORT ================= */
-const lastMessageTime = {}
-let OCR_RUNNING = false
 const lastOCR = {}
 const express = require('express')
 const QRCode = require('qrcode')
@@ -30,6 +22,7 @@ const sharp = require('sharp')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
 // ===== GLOBAL OCR WORKER =====
 let ocrWorker = null
+let ocrQueue = Promise.resolve()
 process.on('SIGINT', async ()=>{
   console.log('Stopping OCR worker...')
   if(ocrWorker){
@@ -39,19 +32,10 @@ process.on('SIGINT', async ()=>{
 })
 
 async function initOCR(){
-
-  ocrWorker = await createWorker()
-
-  await ocrWorker.loadLanguage('eng')
-  await ocrWorker.initialize('eng')
-
-  await ocrWorker.setParameters({
-    tessedit_pageseg_mode: 6
-  })
-
+  ocrWorker = await createWorker('eng+ind')
   console.log('✅ OCR Worker Ready')
-
 }
+
 /* ================= CONFIG ================= */
 /* ================= CONFIG ================= */
 const BASE_DIR = path.join('/app/data')
@@ -299,14 +283,14 @@ if(splitMatch){
 
 // ===== DETECT NOMINAL =====
 const amountMatch =
-  text.match(/(\d+(?:[.,]\d+)?)(k|rb|jt)/i) ||
+  text.match(/(\d+(?:[.,]\d+)?)(?:\s?(k|rb|jt))/) ||
   text.match(/\b\d{4,}\b/)
 let total = 0
 
 if(amountMatch){
 
 let num = parseFloat(amountMatch[1].replace(',', '.'))
-const unit = amountMatch[2] ? amountMatch[2].toLowerCase() : ''
+const unit = amountMatch[2] || ''
 
  if(unit === 'k' || unit === 'rb')
   num *= 1000
@@ -466,8 +450,7 @@ if(!v) continue
 async function preprocessImage(buf){
   return sharp(buf)
     .rotate()
-    .resize(1000)
-    .trim()
+    .resize(600)
     .greyscale()
     .normalize()
     .sharpen()
@@ -577,9 +560,10 @@ const sock=makeWASocket({
 
 sock.ev.on('creds.update',saveCreds)
 
-sock.ev.on('connection.update', (update) => {
+sock.ev.on('connection.update',(update)=>{
+  const {connection,qr} = update
 
-  const { connection, qr, lastDisconnect } = update
+  console.log('Connection update:', connection || 'no-state')
 
   if(qr){
     console.log('QR generated')
@@ -587,62 +571,29 @@ sock.ev.on('connection.update', (update) => {
   }
 
   if(connection === 'open'){
-    console.log('✅ WA CONNECTED')
+    console.log('WA CONNECTED')
     latestQR = null
   }
 
   if(connection === 'close'){
+  console.log('WA CLOSED')
 
-    const reason = lastDisconnect?.error?.output?.statusCode
+  const reason = update?.lastDisconnect?.error?.output?.statusCode
+  console.log('Reason:', reason)
 
-    console.log('❌ WA CLOSED:', reason)
-
-    // logout → jangan reconnect
-    if(reason === 401){
-      console.log("⚠ Session logout, scan ulang QR")
-      return
-    }
-
-    // reconnect normal
-    starting = false
-
-    setTimeout(()=>{
-      console.log("🔄 Restarting bot...")
-      startBot()
-    },5000)
-
-  }
-
+  starting = false
+  setTimeout(startBot,5000)
+}
 })
-const processedMessages = new Set()
-const processedImages = new Set()
 
-setInterval(()=>{
-  processedMessages.clear()
-  processedImages.clear()
-  console.log("🧹 message & image cache cleared")
-},300000)
-
-sock.ev.on('messages.upsert', async ({ messages, type }) => {
-  console.log("UPSERT EVENT", type)
-  
-  
- if(type !== 'notify') return
+sock.ev.on('messages.upsert', async ({ messages }) => {
 
  try{
 
   const m = messages[0]
-
-  if(!m) return
   if(!m.message) return
-  if(m.key.fromMe) return
-  if(m.message?.protocolMessage) return
-  if(!m.key.id) return
 
-  if(processedMessages.has(m.key.id)) return
-  processedMessages.add(m.key.id)
-
-  await processMessage(m, processedImages)
+  await processMessage(m)
 
  }catch(err){
 
@@ -652,8 +603,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
 })
 
-async function processMessage(m, processedImages){
-   console.log("PROCESS MESSAGE", m.key.id)
+async function processMessage(m){
 
 function getText(m){
  return (
@@ -666,7 +616,7 @@ function getText(m){
 }
 
 const text = getText(m)
-const from = m.key.participant || m.key.remoteJid
+const from = m.key.remoteJid
 
 /* ===== ARM ===== */
 if(/^pingpong$/i.test(text)){
@@ -680,31 +630,20 @@ if(armedUsers[from] && text && !m.message.imageMessage){
 
  const parsed = parseNaturalInput(text)
 
-const words = text.split(/\s+/)
+ const words = text.split(/\s+/)
 
-let akunList = []
+let akunAsal=''
+let akunTujuan=''
 
 for(const w of words){
+
  const acc = detectAccount(w)
- if(acc){
-   akunList.push(acc)
+
+ if(acc && !akunAsal){
+   akunAsal = acc
  }
-}
-
-let akunAsal = ''
-let akunTujuan = ''
-
-if(parsed.type === 'Transfer'){
-
- if(akunList.length >= 2){
-   akunAsal = akunList[0]
-   akunTujuan = akunList[1]
- }
-
-}else{
-
- if(akunList.length >= 1){
-   akunAsal = akunList[0]
+ else if(acc && !akunTujuan){
+   akunTujuan = acc
  }
 
 }
@@ -791,6 +730,19 @@ if(pendingManual[from]){
 for(const l of lines){
 
   // ===== TYPE =====
+
+if(/type/i.test(l)){
+  if(/income/i.test(l)){
+    d.TYPE='Income'
+  } 
+  else if(/transfer/i.test(l)){
+    d.TYPE='Transfer'
+  } 
+  else{
+    d.TYPE='Expense'
+  }
+}
+
   // ===== TOTAL =====
   // EDIT MERCHANT
 
@@ -979,134 +931,82 @@ if(/^undo$/i.test(text)){
   await sheet.deleteRows(rowNumber)
 
   delete lastSaved[from]
-  delete pendingConfirm[from]
 
   return sock.sendMessage(from,{text:'↩️ Transaksi terakhir dibatalkan'})
 }
-
 /* ===== OCR ===== */
-if(Date.now() - (lastMessageTime[from] || 0) < 1500){
-  return
-}
-
-lastMessageTime[from] = Date.now()
+/* ===== OCR ===== */
 if(!m.message.imageMessage || !armedUsers[from]) return
-const imgId = m.key.id + '_img'
 
-if(processedImages.has(imgId)) return
-processedImages.add(imgId)
-
-// 🔥 reset langsung supaya tidak loop
-armedUsers[from] = false
-
-// hanya 1 OCR berjalan
-
-if(OCR_RUNNING){
-  return sock.sendMessage(from,{
-    text:'⏳ OCR sedang memproses struk lain'
-  })
-}
-
-// rate limit user
+// ===== OCR RATE LIMITER =====
 if(Date.now() - (lastOCR[from] || 0) < 5000){
   return sock.sendMessage(from,{
     text:'⏳ Tunggu 5 detik sebelum kirim struk lagi'
   })
 }
 
-OCR_RUNNING = true
 lastOCR[from] = Date.now()
 
 try{
-
-let buf = await downloadMediaMessage(
+  const buf = await downloadMediaMessage(
   m,
   'buffer',
   {},
   { logger: Pino({ level: 'silent' }) }
 )
+ const processed = await preprocessImage(buf)
+ buf = null
 
-let processed = await preprocessImage(buf)
-buf = null
+const result = await (ocrQueue = ocrQueue.then(() =>
+  ocrWorker.recognize(processed)
+))
 
-  if(!ocrWorker){
-    console.log("⚠ OCR worker restart")
-    await initOCR()
-  }
+const { data } = result
 
-  const result = await Promise.race([
-    ocrWorker.recognize(processed),
-    new Promise((_,reject)=>setTimeout(()=>reject('OCR timeout'),15000))
-  ])
 
-  const { data } = result
-  processed = null
 
-  const best = extractSmartTotal(data.text, data.words)
+const best = extractSmartTotal(data.text, data.words)
 
-  if(!best){
-    await sock.sendMessage(from,{
-      text:'❌ Tidak bisa menemukan TOTAL di struk.\nKetik manual 50000 atau kirim ulang foto.'
-    })
-    return
-  }
+if(!best){
+  await sock.sendMessage(from,{
+    text:'❌ Tidak bisa menemukan TOTAL di struk.\nKetik manual 50000 atau kirim ulang foto yang lebih jelas.'
+  })
+  return
+}
 
-  const merchant = extractMerchant(data.text)
-  const accountDetected = detectAccount(data.text)
+const merchant = extractMerchant(data.text)
+const accountDetected = detectAccount(data.text)
 
-  const d = {
-    TYPE:'Expense',
-    MERCHANT: merchant,
-    TOTAL: best.value,
-    AKUN_ASAL: accountDetected,
-    AKUN_TUJUAN:'',
-    TANGGAL:new Date().toLocaleDateString('id-ID'),
-    JAM:new Date().toLocaleTimeString('id-ID'),
-    KATEGORI: recallMerchantCategory(merchant) || detectCategory(data.text),
-    METODE: detectPayment(data.text),
-    KETERANGAN: detectRecurring(data.text) ? 'Recurring' : '',
-    OCR_CONF: Math.round(data.confidence)
-  }
+const d = {
+  TYPE:'Expense',
+  MERCHANT: merchant,
+  TOTAL: best.value,
+  AKUN_ASAL: accountDetected,
+  AKUN_TUJUAN:'',
+  TANGGAL:new Date().toLocaleDateString('id-ID'),
+  JAM:new Date().toLocaleTimeString('id-ID'),
+  KATEGORI: recallMerchantCategory(merchant) || detectCategory(data.text),
+  METODE: detectPayment(data.text),
+  KETERANGAN: detectRecurring(data.text) ? 'Recurring' : '', 
+  OCR_CONF: Math.round(data.confidence)
+}
 
-  pendingConfirm[from]=d
-  armedUsers[from]=false
-
-  return sock.sendMessage(from,{text:formatPreview(d)})
+ pendingConfirm[from]=d
+ armedUsers[from]=false
+ return sock.sendMessage(from,{text:formatPreview(d)})
 
 }catch(err){
 
-  console.log("OCR ERROR:",err)
 
-  ocrWorker = null
-
-  pendingManual[from]=true
-  armedUsers[from]=false
-
-  return sock.sendMessage(from,{
-    text:'❌ OCR gagal, ketik manual'
-  })
-
-}finally{
-
-  OCR_RUNNING = false
-
+ pendingManual[from]=true
+ armedUsers[from]=false
+ return sock.sendMessage(from,{text:'❌ OCR gagal, ketik manual'})
 }
 
 }
 
 }
-setInterval(()=>{
 
-  const ram = process.memoryUsage().rss / 1024 / 1024
-
-  console.log("RAM:",ram.toFixed(0),"MB")
-
-  if(ram > 220){
-    console.log("⚠ RAM limit restart")
-    process.exit(1)
-  }
-
-},20000)
 (async ()=>{
   await initOCR()
   await initSheet()
