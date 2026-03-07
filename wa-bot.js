@@ -601,14 +601,19 @@ setInterval(()=>{
   console.log("🧹 message cache cleared")
 },300000)
 
-sock.ev.on('messages.upsert', async ({ messages }) => {
+sock.ev.on('messages.upsert', async ({ messages, type }) => {
+
+ if(type !== 'notify') return
 
  try{
 
   const m = messages[0]
 
+  if(!m) return
   if(!m.message) return
   if(m.key.fromMe) return
+  if(m.message?.protocolMessage) return
+  if(!m.key.id) return
 
   if(processedMessages.has(m.key.id)) return
   processedMessages.add(m.key.id)
