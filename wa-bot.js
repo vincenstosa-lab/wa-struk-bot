@@ -33,7 +33,10 @@ process.on('SIGINT', async ()=>{
 
 async function initOCR(){
 
-  ocrWorker = await createWorker('eng')
+  ocrWorker = await createWorker()
+
+  await ocrWorker.loadLanguage('eng')
+  await ocrWorker.initialize('eng')
 
   await ocrWorker.setParameters({
     tessedit_pageseg_mode: 6
@@ -42,7 +45,6 @@ async function initOCR(){
   console.log('✅ OCR Worker Ready')
 
 }
-
 /* ================= CONFIG ================= */
 /* ================= CONFIG ================= */
 const BASE_DIR = path.join('/app/data')
