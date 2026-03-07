@@ -22,14 +22,6 @@ const sharp = require('sharp')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
 // ===== GLOBAL OCR WORKER =====
 let ocrWorker = null
-let ocrQueue = Promise.resolve()
-process.on('SIGINT', async ()=>{
-  console.log('Stopping OCR worker...')
-  if(ocrWorker){
-    await ocrWorker.terminate()
-  }
-  process.exit()
-})
 
 async function initOCR(){
   ocrWorker = await createWorker('eng+ind')
@@ -493,6 +485,8 @@ edit tanggal …
 
 async function saveToSheet(d,user){
 
+ async function saveToSheet(d,user){
+
  try{
 
   if(!sheet){
@@ -501,7 +495,7 @@ async function saveToSheet(d,user){
 
   const id = crypto.randomUUID()
 
- const row = await sheet.addRow({
+  await sheet.addRow({
    ID: id,
    TYPE: d.TYPE,
    MERCHANT: d.MERCHANT,
@@ -515,13 +509,19 @@ async function saveToSheet(d,user){
    AKUN_TUJUAN: d.AKUN_TUJUAN
   })
 
- lastSaved[user] = row.rowNumber
+  lastSaved[user] = id
 
   console.log("Saved:",id)
 
  }catch(err){
   console.error("❌ Save sheet error:",err)
  }
+
+}
+ // 🔥 simpan id transaksi terakhir
+ lastSaved[user] = id
+
+ console.log("Saved:", id)
 
 }
 
@@ -586,37 +586,15 @@ sock.ev.on('connection.update',(update)=>{
 }
 })
 
-sock.ev.on('messages.upsert', async ({ messages }) => {
+sock.ev.on('messages.upsert', async ({messages})=>{
+const msg=messages[0]
+if(!msg?.message||msg.key.fromMe) return
 
- try{
-
-  const m = messages[0]
-  if(!m.message) return
-
-  await processMessage(m)
-
- }catch(err){
-
-  console.error("Message handler error:", err)
-
- }
-
-})
-
-async function processMessage(m){
-
-function getText(m){
- return (
-  m.message?.conversation ||
-  m.message?.extendedTextMessage?.text ||
-  m.message?.imageMessage?.caption ||
-  m.message?.videoMessage?.caption ||
-  ''
- )
-}
-
-const text = getText(m)
-const from = m.key.remoteJid
+const from=msg.key.remoteJid
+const text=
+ msg.message.conversation ||
+ msg.message.extendedTextMessage?.text ||
+ msg.message.imageMessage?.caption || ''
 
 /* ===== ARM ===== */
 if(/^pingpong$/i.test(text)){
@@ -626,7 +604,7 @@ if(/^pingpong$/i.test(text)){
 
 /* ===== NATURAL INPUT ===== */
 /* ===== NATURAL INPUT ===== */
-if(armedUsers[from] && text && !m.message.imageMessage){
+if(armedUsers[from] && text && !msg.message.imageMessage){
 
  const parsed = parseNaturalInput(text)
 
@@ -658,7 +636,7 @@ for(const w of words){
      MERCHANT: parsed.merchant,
      TOTAL: parsed.total,
     AKUN_ASAL: akunAsal || accountDetected, 
-    AKUN_TUJUAN: akunTujuan || '',
+    AKUN_TUJUAN: parsed.akunTujuan || '',
      TANGGAL:new Date().toLocaleDateString('id-ID',{
        day:'2-digit',
        month:'2-digit',
@@ -916,9 +894,9 @@ if(d.TYPE === 'Transfer'){
 /* ===== UNDO LAST SAVE ===== */
 if(/^undo$/i.test(text)){
 
-  const rowNumber = lastSaved[from]
+  const lastId = lastSaved[from]
 
-  if(!rowNumber){
+  if(!lastId){
     return sock.sendMessage(from,{text:'❌ Tidak ada transaksi yang bisa di-undo'})
   }
 
@@ -927,16 +905,24 @@ if(/^undo$/i.test(text)){
   await doc.loadInfo()
 
   const sheet = doc.sheetsByIndex[0]
+  const rows = await sheet.getRows()
 
-  await sheet.deleteRows(rowNumber)
+  const row = rows.find(r => r.ID === lastId)
+
+  if(!row){
+    return sock.sendMessage(from,{text:'❌ Data tidak ditemukan'})
+  }
+
+  await row.delete()
 
   delete lastSaved[from]
 
   return sock.sendMessage(from,{text:'↩️ Transaksi terakhir dibatalkan'})
 }
+
 /* ===== OCR ===== */
 /* ===== OCR ===== */
-if(!m.message.imageMessage || !armedUsers[from]) return
+if(!msg.message.imageMessage||!armedUsers[from]) return
 
 // ===== OCR RATE LIMITER =====
 if(Date.now() - (lastOCR[from] || 0) < 5000){
@@ -947,23 +933,21 @@ if(Date.now() - (lastOCR[from] || 0) < 5000){
 
 lastOCR[from] = Date.now()
 
+let file = null
+
 try{
-  const buf = await downloadMediaMessage(
-  m,
+ const buf = await downloadMediaMessage(
+  msg,
   'buffer',
   {},
   { logger: Pino({ level: 'silent' }) }
 )
  const processed = await preprocessImage(buf)
- buf = null
 
-const result = await (ocrQueue = ocrQueue.then(() =>
-  ocrWorker.recognize(processed)
-))
+const { data } = await ocrWorker.recognize(processed)
 
-const { data } = result
-
-
+// hapus file setelah dipakai
+fs.unlinkSync(file)
 
 const best = extractSmartTotal(data.text, data.words)
 
@@ -997,18 +981,20 @@ const d = {
 
 }catch(err){
 
+ if(file && fs.existsSync(file)){
+   try{ fs.unlinkSync(file) }catch{}
+ }
 
  pendingManual[from]=true
  armedUsers[from]=false
  return sock.sendMessage(from,{text:'❌ OCR gagal, ketik manual'})
 }
 
-}
+})
 
 }
 
 (async ()=>{
   await initOCR()
-  await initSheet()
   startBot()
 })()
