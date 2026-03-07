@@ -966,6 +966,11 @@ try{
  const processed = await preprocessImage(buf)
  buf = null
 
+if(!ocrWorker){
+  console.log("⚠ OCR worker restart")
+  await initOCR()
+}
+
 const result = await Promise.race([
   ocrQueue = ocrQueue.then(() => ocrWorker.recognize(processed)),
   new Promise((_,reject)=>setTimeout(()=>reject('OCR timeout'),15000))
@@ -1007,6 +1012,9 @@ const d = {
 
 }catch(err){
 
+ console.log("OCR ERROR:",err)
+
+ ocrWorker = null
 
  pendingManual[from]=true
  armedUsers[from]=false
