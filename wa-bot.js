@@ -9,6 +9,7 @@ process.on('SIGTERM', async ()=>{
   process.exit(0)
 })
 /* ================= IMPORT ================= */
+const lastMessageTime = {}
 let OCR_RUNNING = false
 const lastOCR = {}
 const express = require('express')
@@ -623,6 +624,8 @@ setInterval(()=>{
 },300000)
 
 sock.ev.on('messages.upsert', async ({ messages, type }) => {
+  console.log("UPSERT EVENT", type)
+  
   
  if(type !== 'notify') return
 
@@ -650,6 +653,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 })
 
 async function processMessage(m, processedImages){
+   console.log("PROCESS MESSAGE", m.key.id)
 
 function getText(m){
  return (
@@ -981,7 +985,11 @@ if(/^undo$/i.test(text)){
 }
 
 /* ===== OCR ===== */
+if(Date.now() - (lastMessageTime[from] || 0) < 1500){
+  return
+}
 
+lastMessageTime[from] = Date.now()
 if(!m.message.imageMessage || !armedUsers[from]) return
 const imgId = m.key.id + '_img'
 
@@ -992,6 +1000,7 @@ processedImages.add(imgId)
 armedUsers[from] = false
 
 // hanya 1 OCR berjalan
+
 if(OCR_RUNNING){
   return sock.sendMessage(from,{
     text:'⏳ OCR sedang memproses struk lain'
@@ -1010,15 +1019,15 @@ lastOCR[from] = Date.now()
 
 try{
 
-  let buf = await downloadMediaMessage(
-    m,
-    'buffer',
-    {},
-    { logger: Pino({ level: 'silent' }) }
-  )
+let buf = await downloadMediaMessage(
+  m,
+  'buffer',
+  {},
+  { logger: Pino({ level: 'silent' }) }
+)
 
-  const processed = await preprocessImage(buf)
-  buf = null
+let processed = await preprocessImage(buf)
+buf = null
 
   if(!ocrWorker){
     console.log("⚠ OCR worker restart")
