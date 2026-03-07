@@ -1,7 +1,13 @@
 /* ================= SAFE GUARD ================= */
 process.on('uncaughtException', err => console.error('❌ Uncaught:', err))
 process.on('unhandledRejection', err => console.error('❌ Rejection:', err))
-
+process.on('SIGTERM', async ()=>{
+  console.log('SIGTERM received')
+  if(ocrWorker){
+    await ocrWorker.terminate()
+  }
+  process.exit(0)
+})
 /* ================= IMPORT ================= */
 let OCR_RUNNING = false
 const lastOCR = {}
@@ -570,10 +576,9 @@ const sock=makeWASocket({
 
 sock.ev.on('creds.update',saveCreds)
 
-sock.ev.on('connection.update',(update)=>{
-  const {connection,qr} = update
+sock.ev.on('connection.update', (update) => {
 
-  console.log('Connection update:', connection || 'no-state')
+  const { connection, qr, lastDisconnect } = update
 
   if(qr){
     console.log('QR generated')
@@ -581,28 +586,44 @@ sock.ev.on('connection.update',(update)=>{
   }
 
   if(connection === 'open'){
-    console.log('WA CONNECTED')
+    console.log('✅ WA CONNECTED')
     latestQR = null
   }
 
   if(connection === 'close'){
-  console.log('WA CLOSED')
 
-  const reason = update?.lastDisconnect?.error?.output?.statusCode
-  console.log('Reason:', reason)
+    const reason = lastDisconnect?.error?.output?.statusCode
 
-  starting = false
-  setTimeout(startBot,5000)
-}
+    console.log('❌ WA CLOSED:', reason)
+
+    // logout → jangan reconnect
+    if(reason === 401){
+      console.log("⚠ Session logout, scan ulang QR")
+      return
+    }
+
+    // reconnect normal
+    starting = false
+
+    setTimeout(()=>{
+      console.log("🔄 Restarting bot...")
+      startBot()
+    },5000)
+
+  }
+
 })
 const processedMessages = new Set()
+const processedImages = new Set()
+
 setInterval(()=>{
   processedMessages.clear()
-  console.log("🧹 message cache cleared")
+  processedImages.clear()
+  console.log("🧹 message & image cache cleared")
 },300000)
 
 sock.ev.on('messages.upsert', async ({ messages, type }) => {
-
+  
  if(type !== 'notify') return
 
  try{
@@ -618,7 +639,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
   if(processedMessages.has(m.key.id)) return
   processedMessages.add(m.key.id)
 
-  await processMessage(m)
+  await processMessage(m, processedImages)
 
  }catch(err){
 
@@ -628,7 +649,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
 })
 
-async function processMessage(m){
+async function processMessage(m, processedImages){
 
 function getText(m){
  return (
@@ -960,9 +981,15 @@ if(/^undo$/i.test(text)){
 }
 
 /* ===== OCR ===== */
-/* ===== OCR ===== */
 
 if(!m.message.imageMessage || !armedUsers[from]) return
+const imgId = m.key.id + '_img'
+
+if(processedImages.has(imgId)) return
+processedImages.add(imgId)
+
+// 🔥 reset langsung supaya tidak loop
+armedUsers[from] = false
 
 // hanya 1 OCR berjalan
 if(OCR_RUNNING){
@@ -1004,6 +1031,7 @@ try{
   ])
 
   const { data } = result
+  processed = null
 
   const best = extractSmartTotal(data.text, data.words)
 
