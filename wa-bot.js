@@ -3,6 +3,7 @@ process.on('uncaughtException', err => console.error('❌ Uncaught:', err))
 process.on('unhandledRejection', err => console.error('❌ Rejection:', err))
 
 /* ================= IMPORT ================= */
+const lastOCR = {}
 const express = require('express')
 const QRCode = require('qrcode')
 const crypto = require('crypto')
@@ -16,14 +17,21 @@ const {
 const Pino = require('pino')
 const fs = require('fs')
 const path = require('path')
-const Tesseract = require('tesseract.js')
+const { createWorker } = require('tesseract.js')
 const sharp = require('sharp')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
+// ===== GLOBAL OCR WORKER =====
+let ocrWorker = null
+
+async function initOCR(){
+  ocrWorker = await createWorker('eng+ind')
+  console.log('✅ OCR Worker Ready')
+}
 
 /* ================= CONFIG ================= */
 /* ================= CONFIG ================= */
 const BASE_DIR = path.join('/app/data')
-
+let sheet = null
 const AUTH_DIR = path.join(BASE_DIR, 'auth')
 const IMAGE_DIR = path.join(BASE_DIR, 'images')
 const MEMORY_FILE = path.join(BASE_DIR, 'merchant_memory.json')
@@ -117,6 +125,24 @@ app.listen(PORT, '0.0.0.0', () => {
 })
 
 /* ================= GOOGLE ================= */
+async function initSheet(){
+
+ if(!CREDS){
+  console.log("❌ CREDS NOT FOUND")
+  return
+ }
+
+ const doc = new GoogleSpreadsheet(SHEET_ID)
+
+ await doc.useServiceAccountAuth(CREDS)
+
+ await doc.loadInfo()
+
+ sheet = doc.sheetsByIndex[0]
+
+ console.log("✅ Google Sheet Ready")
+
+}
 
 let CREDS = null
 
@@ -413,10 +439,10 @@ if(!v) continue
   return best
 }
 
-async function preprocessImage(fp){
-  return sharp(fp)
+async function preprocessImage(buf){
+  return sharp(buf)
     .rotate()
-    .resize(1200) // mengecilkan gambar supaya OCR cepat
+    .resize(600)
     .greyscale()
     .normalize()
     .sharpen()
@@ -457,37 +483,41 @@ edit tanggal …
 
 /* ================= SHEET ================= */
 
-async function saveToSheet(d, user){
+async function saveToSheet(d,user){
 
- if(!CREDS){
-   console.log("❌ CREDS NOT FOUND")
-   return
+ async function saveToSheet(d,user){
+
+ try{
+
+  if(!sheet){
+    throw new Error("Sheet belum init")
+  }
+
+  const id = crypto.randomUUID()
+
+  await sheet.addRow({
+   ID: id,
+   TYPE: d.TYPE,
+   MERCHANT: d.MERCHANT,
+   TANGGAL: d.TANGGAL,
+   JAM: d.JAM,
+   TOTAL: d.TOTAL,
+   KATEGORI: d.KATEGORI,
+   METODE: d.METODE,
+   KETERANGAN: d.KETERANGAN,
+   AKUN_ASAL: d.AKUN_ASAL,
+   AKUN_TUJUAN: d.AKUN_TUJUAN
+  })
+
+  lastSaved[user] = id
+
+  console.log("Saved:",id)
+
+ }catch(err){
+  console.error("❌ Save sheet error:",err)
  }
 
- console.log("Saving to sheet...")
-
- const doc = new GoogleSpreadsheet(SHEET_ID)
- await doc.useServiceAccountAuth(CREDS)
- await doc.loadInfo()
-
- const sheet = doc.sheetsByIndex[0]
-
- const id = crypto.randomUUID()
-
- await sheet.addRow({
-  ID: id,
-  TYPE: d.TYPE,
-  MERCHANT: d.MERCHANT,
-  TANGGAL: d.TANGGAL,
-  JAM: d.JAM,
-  TOTAL: d.TOTAL,
-  KATEGORI: d.KATEGORI,
-  METODE: d.METODE,
-  KETERANGAN: d.KETERANGAN,
-  AKUN_ASAL: d.AKUN_ASAL,
-  AKUN_TUJUAN: d.AKUN_TUJUAN
- })
-
+}
  // 🔥 simpan id transaksi terakhir
  lastSaved[user] = id
 
@@ -891,7 +921,19 @@ if(/^undo$/i.test(text)){
 }
 
 /* ===== OCR ===== */
+/* ===== OCR ===== */
 if(!msg.message.imageMessage||!armedUsers[from]) return
+
+// ===== OCR RATE LIMITER =====
+if(Date.now() - (lastOCR[from] || 0) < 5000){
+  return sock.sendMessage(from,{
+    text:'⏳ Tunggu 5 detik sebelum kirim struk lagi'
+  })
+}
+
+lastOCR[from] = Date.now()
+
+let file = null
 
 try{
  const buf = await downloadMediaMessage(
@@ -900,11 +942,12 @@ try{
   {},
   { logger: Pino({ level: 'silent' }) }
 )
- const file=path.join(IMAGE_DIR,Date.now()+'.jpg')
- fs.writeFileSync(file,buf)
+ const processed = await preprocessImage(buf)
 
- const processed=await preprocessImage(file)
- const {data}=await Tesseract.recognize(processed,'eng+ind')
+const { data } = await ocrWorker.recognize(processed)
+
+// hapus file setelah dipakai
+fs.unlinkSync(file)
 
 const best = extractSmartTotal(data.text, data.words)
 
@@ -936,7 +979,12 @@ const d = {
  armedUsers[from]=false
  return sock.sendMessage(from,{text:formatPreview(d)})
 
-}catch{
+}catch(err){
+
+ if(file && fs.existsSync(file)){
+   try{ fs.unlinkSync(file) }catch{}
+ }
+
  pendingManual[from]=true
  armedUsers[from]=false
  return sock.sendMessage(from,{text:'❌ OCR gagal, ketik manual'})
@@ -946,4 +994,7 @@ const d = {
 
 }
 
-startBot()
+(async ()=>{
+  await initOCR()
+  startBot()
+})()
