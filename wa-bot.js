@@ -22,10 +22,25 @@ const sharp = require('sharp')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
 // ===== GLOBAL OCR WORKER =====
 let ocrWorker = null
+let ocrQueue = Promise.resolve()
+process.on('SIGINT', async ()=>{
+  console.log('Stopping OCR worker...')
+  if(ocrWorker){
+    await ocrWorker.terminate()
+  }
+  process.exit()
+})
 
 async function initOCR(){
-  ocrWorker = await createWorker('eng+ind')
+
+  ocrWorker = await createWorker('eng')
+
+  await ocrWorker.setParameters({
+    tessedit_pageseg_mode: 6
+  })
+
   console.log('✅ OCR Worker Ready')
+
 }
 
 /* ================= CONFIG ================= */
@@ -275,14 +290,14 @@ if(splitMatch){
 
 // ===== DETECT NOMINAL =====
 const amountMatch =
-  text.match(/(\d+(?:[.,]\d+)?)(?:\s?(k|rb|jt))/) ||
+  text.match(/(\d+(?:[.,]\d+)?)(k|rb|jt)/i) ||
   text.match(/\b\d{4,}\b/)
 let total = 0
 
 if(amountMatch){
 
 let num = parseFloat(amountMatch[1].replace(',', '.'))
-const unit = amountMatch[2] || ''
+const unit = amountMatch[2] ? amountMatch[2].toLowerCase() : ''
 
  if(unit === 'k' || unit === 'rb')
   num *= 1000
@@ -442,7 +457,8 @@ if(!v) continue
 async function preprocessImage(buf){
   return sharp(buf)
     .rotate()
-    .resize(600)
+    .resize(1000)
+    .trim()
     .greyscale()
     .normalize()
     .sharpen()
@@ -485,8 +501,6 @@ edit tanggal …
 
 async function saveToSheet(d,user){
 
- async function saveToSheet(d,user){
-
  try{
 
   if(!sheet){
@@ -495,7 +509,7 @@ async function saveToSheet(d,user){
 
   const id = crypto.randomUUID()
 
-  await sheet.addRow({
+ const row = await sheet.addRow({
    ID: id,
    TYPE: d.TYPE,
    MERCHANT: d.MERCHANT,
@@ -509,19 +523,13 @@ async function saveToSheet(d,user){
    AKUN_TUJUAN: d.AKUN_TUJUAN
   })
 
-  lastSaved[user] = id
+ lastSaved[user] = row.rowNumber
 
   console.log("Saved:",id)
 
  }catch(err){
   console.error("❌ Save sheet error:",err)
  }
-
-}
- // 🔥 simpan id transaksi terakhir
- lastSaved[user] = id
-
- console.log("Saved:", id)
 
 }
 
@@ -586,15 +594,37 @@ sock.ev.on('connection.update',(update)=>{
 }
 })
 
-sock.ev.on('messages.upsert', async ({messages})=>{
-const msg=messages[0]
-if(!msg?.message||msg.key.fromMe) return
+sock.ev.on('messages.upsert', async ({ messages }) => {
 
-const from=msg.key.remoteJid
-const text=
- msg.message.conversation ||
- msg.message.extendedTextMessage?.text ||
- msg.message.imageMessage?.caption || ''
+ try{
+
+  const m = messages[0]
+  if(!m.message) return
+
+  await processMessage(m)
+
+ }catch(err){
+
+  console.error("Message handler error:", err)
+
+ }
+
+})
+
+async function processMessage(m){
+
+function getText(m){
+ return (
+  m.message?.conversation ||
+  m.message?.extendedTextMessage?.text ||
+  m.message?.imageMessage?.caption ||
+  m.message?.videoMessage?.caption ||
+  ''
+ )
+}
+
+const text = getText(m)
+const from = m.key.remoteJid
 
 /* ===== ARM ===== */
 if(/^pingpong$/i.test(text)){
@@ -604,24 +634,35 @@ if(/^pingpong$/i.test(text)){
 
 /* ===== NATURAL INPUT ===== */
 /* ===== NATURAL INPUT ===== */
-if(armedUsers[from] && text && !msg.message.imageMessage){
+if(armedUsers[from] && text && !m.message.imageMessage){
 
  const parsed = parseNaturalInput(text)
 
- const words = text.split(/\s+/)
+const words = text.split(/\s+/)
 
-let akunAsal=''
-let akunTujuan=''
+let akunList = []
 
 for(const w of words){
-
  const acc = detectAccount(w)
-
- if(acc && !akunAsal){
-   akunAsal = acc
+ if(acc){
+   akunList.push(acc)
  }
- else if(acc && !akunTujuan){
-   akunTujuan = acc
+}
+
+let akunAsal = ''
+let akunTujuan = ''
+
+if(parsed.type === 'Transfer'){
+
+ if(akunList.length >= 2){
+   akunAsal = akunList[0]
+   akunTujuan = akunList[1]
+ }
+
+}else{
+
+ if(akunList.length >= 1){
+   akunAsal = akunList[0]
  }
 
 }
@@ -636,7 +677,7 @@ for(const w of words){
      MERCHANT: parsed.merchant,
      TOTAL: parsed.total,
     AKUN_ASAL: akunAsal || accountDetected, 
-    AKUN_TUJUAN: parsed.akunTujuan || '',
+    AKUN_TUJUAN: akunTujuan || '',
      TANGGAL:new Date().toLocaleDateString('id-ID',{
        day:'2-digit',
        month:'2-digit',
@@ -708,19 +749,6 @@ if(pendingManual[from]){
 for(const l of lines){
 
   // ===== TYPE =====
-
-if(/type/i.test(l)){
-  if(/income/i.test(l)){
-    d.TYPE='Income'
-  } 
-  else if(/transfer/i.test(l)){
-    d.TYPE='Transfer'
-  } 
-  else{
-    d.TYPE='Expense'
-  }
-}
-
   // ===== TOTAL =====
   // EDIT MERCHANT
 
@@ -894,9 +922,9 @@ if(d.TYPE === 'Transfer'){
 /* ===== UNDO LAST SAVE ===== */
 if(/^undo$/i.test(text)){
 
-  const lastId = lastSaved[from]
+  const rowNumber = lastSaved[from]
 
-  if(!lastId){
+  if(!rowNumber){
     return sock.sendMessage(from,{text:'❌ Tidak ada transaksi yang bisa di-undo'})
   }
 
@@ -905,24 +933,17 @@ if(/^undo$/i.test(text)){
   await doc.loadInfo()
 
   const sheet = doc.sheetsByIndex[0]
-  const rows = await sheet.getRows()
 
-  const row = rows.find(r => r.ID === lastId)
-
-  if(!row){
-    return sock.sendMessage(from,{text:'❌ Data tidak ditemukan'})
-  }
-
-  await row.delete()
+  await sheet.deleteRows(rowNumber)
 
   delete lastSaved[from]
+  delete pendingConfirm[from]
 
   return sock.sendMessage(from,{text:'↩️ Transaksi terakhir dibatalkan'})
 }
-
 /* ===== OCR ===== */
 /* ===== OCR ===== */
-if(!msg.message.imageMessage||!armedUsers[from]) return
+if(!m.message.imageMessage || !armedUsers[from]) return
 
 // ===== OCR RATE LIMITER =====
 if(Date.now() - (lastOCR[from] || 0) < 5000){
@@ -933,21 +954,24 @@ if(Date.now() - (lastOCR[from] || 0) < 5000){
 
 lastOCR[from] = Date.now()
 
-let file = null
-
 try{
- const buf = await downloadMediaMessage(
-  msg,
+  let buf = await downloadMediaMessage(
+  m,
   'buffer',
   {},
   { logger: Pino({ level: 'silent' }) }
 )
  const processed = await preprocessImage(buf)
+ buf = null
 
-const { data } = await ocrWorker.recognize(processed)
+const result = await Promise.race([
+  ocrQueue = ocrQueue.then(() => ocrWorker.recognize(processed)),
+  new Promise((_,reject)=>setTimeout(()=>reject('OCR timeout'),15000))
+])
 
-// hapus file setelah dipakai
-fs.unlinkSync(file)
+const { data } = result
+
+
 
 const best = extractSmartTotal(data.text, data.words)
 
@@ -981,20 +1005,18 @@ const d = {
 
 }catch(err){
 
- if(file && fs.existsSync(file)){
-   try{ fs.unlinkSync(file) }catch{}
- }
 
  pendingManual[from]=true
  armedUsers[from]=false
  return sock.sendMessage(from,{text:'❌ OCR gagal, ketik manual'})
 }
 
-})
+}
 
 }
 
 (async ()=>{
   await initOCR()
+  await initSheet()
   startBot()
 })()
