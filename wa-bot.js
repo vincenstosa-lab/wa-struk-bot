@@ -44,6 +44,19 @@ for (const d of [AUTH_DIR, IMAGE_DIR]) {
   }
 }
 
+setInterval(()=>{
+ try{
+  const files = fs.readdirSync(IMAGE_DIR)
+  for(const f of files){
+   const p = path.join(IMAGE_DIR,f)
+   const stat = fs.statSync(p)
+   if(Date.now() - stat.mtimeMs > 300000){
+     fs.unlinkSync(p)
+   }
+  }
+ }catch{}
+},60000)
+
 /* ================= MEMORY ================= */
 
 let merchantMemory = {}
@@ -903,8 +916,25 @@ try{
  const file=path.join(IMAGE_DIR,Date.now()+'.jpg')
  fs.writeFileSync(file,buf)
 
- const processed=await preprocessImage(file)
- const {data}=await Tesseract.recognize(processed,'eng+ind')
+const processed = await preprocessImage(file)
+
+const { data } = await Tesseract.recognize(
+  processed,
+  'eng+ind',
+  {
+    workerPath: undefined,
+    logger: () => {}
+  }
+)
+
+// 🔥 Hapus file setelah OCR
+try{
+  fs.unlinkSync(file)
+}catch{}
+
+if(global.gc){
+  global.gc()
+}
 
 const best = extractSmartTotal(data.text, data.words)
 
