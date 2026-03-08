@@ -253,23 +253,50 @@ text = text.toLowerCase()
 
 // ===== SPLIT DETECTION =====
 let split = 1
-const splitMatch = text.match(/\/\s*(\d+)/)
 
-if(splitMatch){
-  split = Number(splitMatch[1])
-  text = text.replace(splitMatch[0],'')
+// format /3
+const splitSlash = text.match(/\/\s*(\d+)/)
+
+if(splitSlash){
+  split = Number(splitSlash[1])
+  text = text.replace(splitSlash[0],'')
+}
+
+// format "3 orang"
+const splitOrang = text.match(/(\d+)\s*(orang|org|orangnya)/)
+
+if(splitOrang){
+  split = Number(splitOrang[1])
+  text = text.replace(splitOrang[0],'')
+}
+
+// kata bertiga berempat dll
+const kataSplit = {
+  berdua:2,
+  bertiga:3,
+  berempat:4,
+  berlima:5,
+  berenam:6
+}
+
+for(const k in kataSplit){
+  if(text.includes(k)){
+    split = kataSplit[k]
+    text = text.replace(k,'')
+  }
 }
 
 // ===== DETECT NOMINAL =====
 const amountMatch =
   text.match(/(\d+(?:[.,]\d+)?)(?:\s?(k|rb|jt))/) ||
   text.match(/\b\d{4,}\b/)
+
 let total = 0
 
 if(amountMatch){
 
-let num = parseFloat(amountMatch[1].replace(',', '.'))
-const unit = amountMatch[2] || ''
+ let num = parseFloat(amountMatch[1].replace(',', '.'))
+ const unit = amountMatch[2] || ''
 
  if(unit === 'k' || unit === 'rb')
   num *= 1000
@@ -278,11 +305,10 @@ const unit = amountMatch[2] || ''
   num *= 1000000
 
  total = Math.round(num)
-
 }
 
 // ===== APPLY SPLIT =====
-if(split > 1){
+if(split > 1 && total > 0){
   total = Math.round(total / split)
 }
 
@@ -313,7 +339,6 @@ return {
 }
 
 }
-
  
 function getDateTime() {
   const now = new Date()
@@ -501,7 +526,7 @@ return `
 🏪 ${d.MERCHANT}
 📅 ${d.TANGGAL}
 ⏰ ${d.JAM}
-💰 Rp ${(d.TOTAL || 0).toLocaleString('id-ID')}
+💰 Rp ${(d.TOTAL || 0).toLocaleString('id-ID')}${d.SPLIT>1?` (Split ${d.SPLIT})`:''}
 📦 ${d.KATEGORI}
 💳 ${d.METODE}
 📝 ${d.KETERANGAN || '-'}
@@ -671,24 +696,25 @@ for(const w of words){
    const accountDetected = detectAccount(text)
 
    const d = {
-     TYPE: parsed.type,
-     MERCHANT: parsed.merchant,
-     TOTAL: parsed.total,
+    TYPE: parsed.type,
+    MERCHANT: parsed.merchant,
+    TOTAL: parsed.total,
+    SPLIT: parsed.split,
     AKUN_ASAL: akunAsal || accountDetected, 
     AKUN_TUJUAN: parsed.akunTujuan || '',
-     TANGGAL:new Date().toLocaleDateString('id-ID',{
-       day:'2-digit',
-       month:'2-digit',
-       year:'numeric'
+    TANGGAL:new Date().toLocaleDateString('id-ID',{
+      day:'2-digit',
+      month:'2-digit',
+      year:'numeric'
      }),
-     JAM:new Date().toLocaleTimeString('id-ID',{
-       hour:'2-digit',
-       minute:'2-digit'
+    JAM:new Date().toLocaleTimeString('id-ID',{
+      hour:'2-digit',
+      minute:'2-digit'
      }),
-     KATEGORI: recallMerchantCategory(parsed.merchant) || detectCategory(text),
-     METODE: detectPayment(text),
-     KETERANGAN: detectRecurring(text) ? 'Recurring' : '',
-     OCR_CONF:100
+    KATEGORI: recallMerchantCategory(parsed.merchant) || detectCategory(text),
+    METODE: detectPayment(text),
+    KETERANGAN: detectRecurring(text) ? 'Recurring' : '',
+    OCR_CONF:100
    }
 
    pendingConfirm[from]=d
