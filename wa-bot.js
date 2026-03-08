@@ -375,52 +375,108 @@ return false
 
 function extractSmartTotal(text='', words=[]){
 
-  const lines = text.split('\n')
+  const lines = text
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
 
-  // 1️⃣ Prioritas keyword TOTAL
-  const priorityKeywords = [
-    /grand total/i,
-    /total bayar/i,
-    /^total/i,
+  const priorityPatterns = [
+    /grand\s*total/i,
+    /total\s*bayar/i,
+    /total\s*item/i,
+    /sub\s*total/i,
+    /^total\b/i,
     /jumlah/i
   ]
 
+  // ===== 1️⃣ PRIORITAS KEYWORD =====
   for(const line of lines){
-    for(const k of priorityKeywords){
-      if(k.test(line)){
-        const nums = line.match(/\d[\d.,]+/g)
-        if(nums){
-          const clean = nums.map(n =>
-            Number(n.replace(/[^\d]/g,''))
-          ).filter(Boolean)
 
-          if(clean.length){
+    for(const p of priorityPatterns){
+
+      if(p.test(line)){
+
+        const nums = line.match(/\d[\d.,]+/g)
+
+        if(nums){
+
+          const values = nums
+            .map(n => Number(n.replace(/\D/g,'')))
+            .filter(Boolean)
+
+          if(values.length){
+
             return {
-              value: Math.max(...clean),
-              conf: 999
+              value: Math.max(...values),
+              conf: 900
             }
+
           }
+
         }
+
       }
+
     }
+
   }
 
-  // 2️⃣ Hindari tunai/kembali
+  // ===== 2️⃣ HINDARI BARIS TUNAI / KEMBALIAN =====
   const blacklist = /tunai|cash|kembali|change/i
 
+  let candidates=[]
+
+  for(const line of lines){
+
+    if(blacklist.test(line)) continue
+
+    const nums = line.match(/\d[\d.,]+/g)
+
+    if(!nums) continue
+
+    for(const n of nums){
+
+      const v = Number(n.replace(/\D/g,''))
+
+      if(v < 500) continue
+      if(v > 100000000) continue
+
+      candidates.push(v)
+
+    }
+
+  }
+
+  if(candidates.length){
+
+    return {
+      value: Math.max(...candidates),
+      conf: 100
+    }
+
+  }
+
+  // ===== 3️⃣ LAST RESORT (OCR WORD LEVEL) =====
   let best=null
+
   for(const w of words){
+
     if(!/\d{3,}/.test(w.text)) continue
-    if(blacklist.test(w.line?.text || '')) continue
 
-    const v=Number(w.text.replace(/\D/g,''))
+    const v = Number(w.text.replace(/\D/g,''))
 
-if(v > 100000000) continue
+    if(!v) continue
+    if(v > 100000000) continue
 
-if(!v) continue
+    if(!best || w.confidence > best.conf){
 
-    if(!best || w.confidence > best.conf)
-      best={value:v,conf:w.confidence}
+      best={
+        value:v,
+        conf:w.confidence
+      }
+
+    }
+
   }
 
   return best
@@ -652,19 +708,35 @@ if(pendingConfirm[from] && /^manual$/i.test(text)){
 if(/^manual$/i.test(text) && armedUsers[from]){
  pendingManual[from]=true
  armedUsers[from]=false
- return sock.sendMessage(from,{text:
-`✍️ Input manual:
+return sock.sendMessage(from,{text:
+`✍️ *INPUT MANUAL*
+
+Isi salah satu format berikut.
+
+FORMAT LENGKAP:
 
 type expense/income/transfer
-total
-merchant
+total 
+merchant nama_toko
 kategori
-metode
-keterangan
-asal
-tujuan
+metode pembayaran
+keterangan opsional
+asal bank/akun
+tujuan bank/akun
 tanggal
-jam`
+jam 
+
+
+FORMAT CEPAT:
+
+total 15000
+merchant nama_toko
+
+
+FORMAT PALING CEPAT:
+
+15000 kopi
+`
 })
 }
 
@@ -939,10 +1011,21 @@ if(global.gc){
 const best = extractSmartTotal(data.text, data.words)
 
 if(!best){
-  await sock.sendMessage(from,{
-    text:'❌ Tidak bisa menemukan TOTAL di struk.\nKetik manual 50000 atau kirim ulang foto yang lebih jelas.'
-  })
-  return
+  pendingManual[from]=true
+  armedUsers[from]=false
+
+  return sock.sendMessage(from,{
+text:`❌ Total tidak terbaca.
+
+Silakan isi manual:
+
+total Rp
+merchant nama_toko
+
+atau cukup:
+
+15000 kopi`
+})
 }
 
 const merchant = extractMerchant(data.text)
@@ -969,10 +1052,31 @@ const d = {
 }catch{
  pendingManual[from]=true
  armedUsers[from]=false
- return sock.sendMessage(from,{text:'❌ OCR gagal, ketik manual'})
-}
 
-})
+ return sock.sendMessage(from,{
+  text:`❌ OCR gagal.
+
+  Silakan isi manual dengan format:
+
+  type expense/income/transfer
+  total Rp
+  merchant nama_toko
+  kategori makanan
+  metode pembayaran
+  keterangan opsional
+  asal akun_asal
+  tujuan akun_tujuan
+  tanggal
+  jam
+
+  Contoh cepat:
+  total 18000
+  merchant alfamidi`
+  })
+
+  } // tutup catch
+
+  }) // tutup messages.upsert
 
 }
 
