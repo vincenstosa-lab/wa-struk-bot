@@ -247,9 +247,40 @@ function detectAccount(text=''){
   return ''
 }
 
-function parseNaturalInput(text=''){
+function parseNaturalInput(text){
 
-text = text.toLowerCase()
+  text = text.toLowerCase()
+
+  const akunList = [
+    "bca",
+    "mandiri",
+    "bri",
+    "bni",
+    "dana",
+    "gopay",
+    "ovo",
+    "shopeepay",
+    "cash"
+  ]
+
+  // cari angka
+  const numMatch = text.match(/\d[\d.,]*/)
+  if(numMatch){
+    jumlah = numMatch[0].replace(/[.,]/g,'')
+  }
+
+  // tipe transaksi
+  let tipe = "pengeluaran"
+
+  if(text.includes("transfer")){
+    tipe = "transfer"
+  }
+
+  if(text.includes("topup")){
+    tipe = "topup"
+  }
+
+
 
 // ===== SPLIT DETECTION =====
 let split = 1
@@ -288,8 +319,8 @@ for(const k in kataSplit){
 
 // ===== DETECT NOMINAL =====
 const amountMatch =
-  text.match(/(\d+(?:[.,]\d+)?)(?:\s?(k|rb|jt))/) ||
-  text.match(/\b\d{4,}\b/)
+ text.match(/(\d+(?:[.,]\d+)?)(?:\s?(k|rb|jt))/i) ||
+ text.match(/\d[\d.,]*/)
 
 let total = 0
 
@@ -323,9 +354,11 @@ if(/transfer/i.test(text))
 
 // ===== MERCHANT =====
 let merchant = text
-  .replace(amountMatch?.[0] || '', '')
+  .replace(/\d[\d.,]*/,'')
+  .replace(/\b(total|rp)\b/i,'')
   .replace(/\b(gaji|salary|income|masuk|refund|transfer)\b/gi,'')
   .replace(/\b(cash|qris|debit|kredit|gopay|ovo|dana|bca|bri|bni|mandiri|shopeepay)\b/gi,'')
+  .replace(/\s+/g,' ')
   .trim()
 
 if(!merchant)
@@ -660,6 +693,18 @@ const text=
  msg.message.extendedTextMessage?.text ||
  msg.message.imageMessage?.caption || ''
 
+   // ESCAPE COMMAND
+  if(text === "batal"){
+    delete pendingManual[from]
+    delete pendingConfirm[from]
+
+    await sock.sendMessage(from,{
+      text:"Manual mode dibatalkan."
+    })
+
+    return
+  }
+
 /* ===== ARM ===== */
 if(/^pingpong$/i.test(text)){
  armedUsers[from]=true
@@ -668,6 +713,7 @@ if(/^pingpong$/i.test(text)){
 
 /* ===== NATURAL INPUT ===== */
 /* ===== NATURAL INPUT ===== */
+
 if(armedUsers[from] && text && !msg.message.imageMessage){
 
  const parsed = parseNaturalInput(text)
@@ -769,7 +815,10 @@ FORMAT PALING CEPAT:
 //* ===== MANUAL MODE ===== */
 if(pendingManual[from]){
 
-  if(!text.trim()) return   // 🔥 Tambahkan ini
+  if(!text.trim()){
+  await sock.sendMessage(from,{text:"Input kosong. Ketik *batal* untuk keluar manual mode."})
+  return
+} // 🔥 Tambahkan ini
 
   const lines = text.split('\n')
  const d={
