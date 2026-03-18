@@ -153,6 +153,10 @@ if (
 
 /* ================= OCR HELPERS ================= */
 
+function mergeBrokenNumbers(text=''){
+  return text.replace(/(\d{1,3})\s+(\d{3})/g, '$1$2')
+}
+
 function normalizeTime(t=''){
   const m=t.match(/^([01]?\d|2[0-3])[:.]([0-5]\d)$/)
   return m?`${m[1].padStart(2,'0')}:${m[2]}`:null
@@ -248,7 +252,7 @@ function detectAccount(text=''){
 }
 
 function parseNaturalInput(text){
-
+let jumlah = 0
   text = text.toLowerCase()
 
   const akunList = [
@@ -352,6 +356,7 @@ if(/gaji|salary|income|masuk|refund/i.test(text))
 if(/transfer/i.test(text))
   type = 'Transfer'
 
+
 // ===== MERCHANT =====
 let merchant = text
   .replace(/\d[\d.,]*/,'')
@@ -431,6 +436,18 @@ return false
 
 }
 
+
+
+function extractEwalletTotal(text=''){
+
+  const match = text.match(/rp\s*([\d.,]+)/i)
+
+  if(match){
+    return Number(match[1].replace(/\D/g,''))
+  }
+
+  return null
+}
 function extractSmartTotal(text='', words=[]){
 
   const lines = text
@@ -1051,6 +1068,7 @@ if(/^undo$/i.test(text)){
 }
 
 /* ===== OCR ===== */
+
 if(!msg.message.imageMessage||!armedUsers[from]) return
 
 try{
@@ -1074,6 +1092,8 @@ const { data } = await Tesseract.recognize(
   }
 )
 
+let cleanText = mergeBrokenNumbers(data.text)
+
 // 🔥 Hapus file setelah OCR
 try{
   fs.unlinkSync(file)
@@ -1082,10 +1102,17 @@ try{
 if(global.gc){
   global.gc()
 }
+// 🔥 extract total (QRIS + normal)
+let total = extractEwalletTotal(cleanText)
 
-const best = extractSmartTotal(data.text, data.words)
+let best = null
 
-if(!best){
+if(!total){
+  best = extractSmartTotal(cleanText, data.words)
+  total = best?.value
+}
+
+if(!total){
   pendingManual[from]=true
   armedUsers[from]=false
 
@@ -1103,20 +1130,20 @@ atau cukup:
 })
 }
 
-const merchant = extractMerchant(data.text)
-const accountDetected = detectAccount(data.text)
+const merchant = extractMerchant(cleanText)
+const accountDetected = detectAccount(cleanText)
 
 const d = {
   TYPE:'Expense',
   MERCHANT: merchant,
-  TOTAL: best.value,
+  TOTAL: total,
   AKUN_ASAL: accountDetected,
   AKUN_TUJUAN:'',
   TANGGAL:new Date().toLocaleDateString('id-ID'),
   JAM:new Date().toLocaleTimeString('id-ID'),
-  KATEGORI: recallMerchantCategory(merchant) || detectCategory(data.text),
-  METODE: detectPayment(data.text),
-  KETERANGAN: detectRecurring(data.text) ? 'Recurring' : '', 
+  KATEGORI: recallMerchantCategory(merchant) || detectCategory(cleanText),
+  METODE: detectPayment(cleanText),
+  KETERANGAN: detectRecurring(cleanText) ? 'Recurring' : '', 
   OCR_CONF: Math.round(data.confidence)
 }
 
